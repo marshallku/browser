@@ -43,6 +43,7 @@ AI Browser MCP Server
 - automatic waiting and more robust selector handling than raw CDP
 - easier support for Chromium, Firefox, and WebKit when needed
 - extra MCP tools for secrets: `secret_store_put`, `secret_store_delete`, `type_secret`
+- bulk secret import: `secret_import_csv`
 
 ### AI-specific features to layer on top
 
@@ -123,3 +124,11 @@ npm run smoke:playwright
 - In this Codex sandbox, Chromium launch required escalated permissions to pass the runtime smoke test.
 - The checked smoke path used the cached Playwright Chromium binary at `~/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome`.
 - A runnable MCP entrypoint is provided at [scripts/run-mcp.sh](/home/marshall/dev/browser/scripts/run-mcp.sh).
+
+## Secret Import
+
+`secret_import_csv` reads a header-based CSV and stores one secret handle per row.
+
+- default value column detection: `password`, then `value`, then the first column
+- default label columns: any of `label`, `name`, `title`, `site`, `url`, `username`, `email`
+- output includes `secretId`, row number, label, and a redacted preview
