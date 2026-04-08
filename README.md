@@ -8,7 +8,7 @@ The intended long-term engine is Playwright. The browser engine itself should no
 
 ## Features
 
-All 44 MCP tools from `browser-control`:
+The MCP surface keeps the `browser-control` shape and adds secret-safe input helpers.
 
 | Category | Tools | http-fetch | CDP |
 |----------|-------|:----------:|:---:|
@@ -32,7 +32,7 @@ AI Browser MCP Server
     | BrowserDriver interface
     |
     +-- FetchBrowserDriver (http-fetch)      -- just fetch() + HTML parsing
-    +-- PlaywrightBrowserDriver (planned)    -- preferred full browser runtime
+    +-- PlaywrightBrowserDriver              -- preferred full browser runtime
     +-- CdpBrowserDriver (chromium-cdp)      -- lower-level fallback/runtime experiment
 ```
 
@@ -61,10 +61,6 @@ AI Browser MCP Server
 ## Setup
 
 ```bash
-# Install a Chromium-compatible browser (for CDP mode)
-sudo pacman -S chromium  # Arch
-sudo apt install chromium-browser  # Debian/Ubuntu
-
 # Install dependencies & build
 npm install && npm run build
 ```
@@ -77,13 +73,20 @@ npm install && npm run build
 {
     "mcpServers": {
         "browser": {
-            "command": "node",
-            "args": ["/path/to/browser/dist/server/index.js"],
-            "env": { "BROWSER_RUNTIME": "chromium-cdp" }
+            "command": "/home/marshall/dev/browser/scripts/run-mcp.sh",
+            "env": {
+                "BROWSER_RUNTIME": "playwright",
+                "BROWSER_NAME": "chromium",
+                "BROWSER_HEADLESS": "1",
+                "BROWSER_EXECUTABLE": "/home/marshall/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome"
+            }
         }
     }
 }
 ```
+
+Full example:
+[docs/mcp-config.json](/home/marshall/dev/browser/docs/mcp-config.json)
 
 ### Development
 
@@ -91,6 +94,7 @@ npm install && npm run build
 npm run dev
 npm run build
 npm run smoke:playwright
+./scripts/run-mcp.sh
 ```
 
 ## Modes
@@ -98,7 +102,7 @@ npm run smoke:playwright
 | Mode | `BROWSER_RUNTIME` | Description |
 |------|-------------------|-------------|
 | Playwright | `playwright` | Preferred full browser runtime |
-| HTTP fetch | `http-fetch` (default) | No browser process — fetch pages via HTTP, inspect HTML |
+| HTTP fetch | `http-fetch` | No browser process — fetch pages via HTTP, inspect HTML |
 | Local Chromium | `chromium-cdp` | Launch headless Chromium with full browser control |
 | External CDP | `external-cdp` | Connect to an already-running browser |
 
@@ -112,9 +116,10 @@ npm run smoke:playwright
 | `BROWSER_DEBUG_PORT` | `9222` | CDP port |
 | `BROWSER_HEADLESS` | `1` | Set `0` to show the browser window |
 | `BROWSER_USER_DATA_DIR` | (temp) | Persistent profile directory |
-| `BROWSER_STARTUP_TIMEOUT_MS` | `15000` | Browser launch timeout |
+| `BROWSER_STARTUP_TIMEOUT_MS` | `30000` | Browser launch timeout |
 
 ## Notes
 
 - In this Codex sandbox, Chromium launch required escalated permissions to pass the runtime smoke test.
 - The checked smoke path used the cached Playwright Chromium binary at `~/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome`.
+- A runnable MCP entrypoint is provided at [scripts/run-mcp.sh](/home/marshall/dev/browser/scripts/run-mcp.sh).
