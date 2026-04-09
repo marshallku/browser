@@ -12,9 +12,4 @@ if [[ -z "${BROWSER_EXECUTABLE:-}" && -x "${DEFAULT_CHROMIUM}" ]]; then
   export BROWSER_EXECUTABLE="${DEFAULT_CHROMIUM}"
 fi
 
-if [[ ! -f "${ROOT_DIR}/dist/server/index.js" ]]; then
-  echo "dist/server/index.js not found. Run 'npm run build' first." >&2
-  exit 1
-fi
-
-exec node "${ROOT_DIR}/dist/server/index.js"
+exec node "${ROOT_DIR}/bin/ai-browser.js"

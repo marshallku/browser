@@ -66,6 +66,21 @@ AI Browser MCP Server
 npm install && npm run build
 ```
 
+## Simpler install path
+
+For users, the cleaner path is to publish a prebuilt package and run it with `npx`:
+
+```bash
+npx -y @marshallku/ai-browser
+```
+
+That avoids both local `npm install` and `npm run build` for consumers. To support that flow, this repo now exposes a package bin entrypoint and runs `npm run build` automatically during `npm pack` / `npm publish` via `prepack`.
+
+Current limitation:
+
+- a raw git checkout still needs `npm install && npm run build`
+- `npx @marshallku/ai-browser` only works after this package is published to npm (or another registry)
+
 ## Usage
 
 ### MCP server config (Claude Code)
@@ -74,7 +89,8 @@ npm install && npm run build
 {
     "mcpServers": {
         "browser": {
-            "command": "/home/marshall/dev/browser/scripts/run-mcp.sh",
+            "command": "npx",
+            "args": ["-y", "@marshallku/ai-browser"],
             "env": {
                 "BROWSER_RUNTIME": "playwright",
                 "BROWSER_NAME": "chromium",
@@ -85,6 +101,22 @@ npm install && npm run build
     }
 }
 ```
+
+For a local checkout that has already been built, keep using:
+[scripts/run-mcp.sh](/home/marshall/dev/browser/scripts/run-mcp.sh)
+
+## Release
+
+This repo uses Changesets for versioning and npm publishing.
+
+- Add a release note with `npm run changeset`
+- Merge to `main`
+- GitHub Actions opens or updates a release PR
+- Merging that PR publishes `@marshallku/ai-browser` to npm
+
+Required GitHub secret:
+
+- `NPM_TOKEN`: npm automation token with publish access for `@marshallku/ai-browser`
 
 Full example:
 [docs/mcp-config.json](/home/marshall/dev/browser/docs/mcp-config.json)

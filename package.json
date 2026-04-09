@@ -1,16 +1,32 @@
 {
-    "name": "ai-browser",
+    "name": "@marshallku/ai-browser",
     "version": "0.1.0",
     "description": "MCP server for AI browser control over Playwright and headless runtimes",
     "type": "module",
     "main": "dist/server/index.js",
+    "bin": {
+        "ai-browser": "./bin/ai-browser.js"
+    },
+    "files": [
+        "bin",
+        "dist",
+        "scripts/run-mcp.sh",
+        "README.md"
+    ],
     "scripts": {
         "build": "tsc",
         "dev": "tsx src/server/index.ts",
         "start": "node dist/server/index.js",
+        "prepack": "npm run build",
+        "changeset": "changeset",
+        "version-packages": "changeset version",
+        "release": "changeset publish",
         "typecheck": "tsc --noEmit",
         "smoke:playwright": "node scripts/smoke-playwright.mjs",
         "smoke:fill-and-submit": "node scripts/fill-and-submit.mjs --url 'data:text/html,%3C!doctype%20html%3E%3Chtml%3E%3Cbody%3E%3Cinput%20id%3Demail%3E%3Cbutton%20id%3Dgo%20onclick%3Dwindow.clicked%3D1%3EGo%3C%2Fbutton%3E%3C%2Fbody%3E%3C%2Fhtml%3E' --fill '#email=test@example.com' --click '#go'"
+    },
+    "publishConfig": {
+        "access": "public"
     },
     "dependencies": {
         "@modelcontextprotocol/sdk": "^1.12.1",
@@ -23,6 +39,7 @@
         "@types/node": "^22.0.0",
         "@types/pngjs": "^6.0.5",
         "@types/ws": "^8.5.0",
+        "@changesets/cli": "^2.29.5",
         "tsx": "^4.19.0",
         "typescript": "^5.7.0"
     }
