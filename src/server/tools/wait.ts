@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { send } from "../bridge.js";
+import { createBridgeTextResult } from "./toolResult.js";
 
 export function registerWaitTools(server: McpServer): void {
   server.tool(
@@ -25,16 +26,12 @@ export function registerWaitTools(server: McpServer): void {
         visible,
         tabId,
       });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success ? `Element found: ${selector}` : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(
+        res.success,
+        `Element found: ${selector}`,
+        res.error
+      );
+    }
   );
 
   server.tool(
@@ -49,16 +46,12 @@ export function registerWaitTools(server: McpServer): void {
     },
     async ({ timeout, tabId }) => {
       const res = await send("wait.navigation", { timeout, tabId });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success ? "Navigation complete" : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(
+        res.success,
+        "Navigation complete",
+        res.error
+      );
+    }
   );
 
   server.tool(
@@ -73,7 +66,7 @@ export function registerWaitTools(server: McpServer): void {
         .number()
         .optional()
         .describe(
-          "How long network must be quiet to be considered idle, in ms (default: 500)",
+          "How long network must be quiet to be considered idle, in ms (default: 500)"
         ),
       tabId: z.number().optional().describe("Tab ID (default: active tab)"),
     },
@@ -83,15 +76,7 @@ export function registerWaitTools(server: McpServer): void {
         idleTime,
         tabId,
       });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success ? "Network is idle" : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(res.success, "Network is idle", res.error);
+    }
   );
 }

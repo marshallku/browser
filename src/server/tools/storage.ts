@@ -1,6 +1,11 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { send } from "../bridge.js";
+import {
+  createBridgeJsonResult,
+  createBridgeTextResult,
+  createTextResult,
+} from "./toolResult.js";
 
 export function registerStorageTools(server: McpServer): void {
   server.tool(
@@ -18,16 +23,8 @@ export function registerStorageTools(server: McpServer): void {
     },
     async ({ tabId, type, key }) => {
       const res = await send("storage.get", { tabId, type, key });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success ? JSON.stringify(res.data, null, 2) : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeJsonResult(res.success, res.data, res.error);
+    }
   );
 
   server.tool(
@@ -43,16 +40,12 @@ export function registerStorageTools(server: McpServer): void {
     },
     async ({ tabId, type, key, value }) => {
       const res = await send("storage.set", { tabId, type, key, value });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success ? "Storage value set" : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(
+        res.success,
+        "Storage value set",
+        res.error
+      );
+    }
   );
 
   server.tool(
@@ -66,16 +59,8 @@ export function registerStorageTools(server: McpServer): void {
     },
     async ({ tabId, type }) => {
       const res = await send("storage.clear", { tabId, type });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success ? "Storage cleared" : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(res.success, "Storage cleared", res.error);
+    }
   );
 
   server.tool(
@@ -93,12 +78,10 @@ export function registerStorageTools(server: McpServer): void {
       ]);
 
       if (!cookieRes.success) {
-        return {
-          content: [
-            { type: "text", text: `Failed to get cookies: ${cookieRes.error}` },
-          ],
+        return createTextResult({
+          text: `Failed to get cookies: ${cookieRes.error}`,
           isError: true,
-        };
+        });
       }
 
       const sessionData = {
@@ -109,15 +92,8 @@ export function registerStorageTools(server: McpServer): void {
         sessionStorage: sessionRes.success ? sessionRes.data : {},
       };
 
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(sessionData, null, 2),
-          },
-        ],
-      };
-    },
+      return createBridgeJsonResult(true, sessionData, undefined);
+    }
   );
 
   server.tool(
@@ -145,10 +121,10 @@ export function registerStorageTools(server: McpServer): void {
       try {
         session = JSON.parse(sessionData);
       } catch {
-        return {
-          content: [{ type: "text", text: "Invalid session data JSON" }],
+        return createTextResult({
+          text: "Invalid session data JSON",
           isError: true,
-        };
+        });
       }
 
       const results: string[] = [];
@@ -179,7 +155,9 @@ export function registerStorageTools(server: McpServer): void {
           });
         }
         results.push(
-          `Restored ${Object.keys(session.localStorage).length} localStorage entries`,
+          `Restored ${
+            Object.keys(session.localStorage).length
+          } localStorage entries`
         );
       }
 
@@ -193,13 +171,13 @@ export function registerStorageTools(server: McpServer): void {
           });
         }
         results.push(
-          `Restored ${Object.keys(session.sessionStorage).length} sessionStorage entries`,
+          `Restored ${
+            Object.keys(session.sessionStorage).length
+          } sessionStorage entries`
         );
       }
 
-      return {
-        content: [{ type: "text", text: results.join("\n") }],
-      };
-    },
+      return createTextResult({ text: results.join("\n") });
+    }
   );
 }

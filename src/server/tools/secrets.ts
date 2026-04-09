@@ -3,6 +3,12 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { send } from "../bridge.js";
 import { getSecretStore, redact } from "../secrets.js";
+import { parseCsv } from "../utils/csv.js";
+import {
+  createBridgeTextResult,
+  createJsonResult,
+  createTextResult,
+} from "./toolResult.js";
 
 export function registerSecretTools(server: McpServer): void {
   const secrets = getSecretStore();
@@ -16,20 +22,15 @@ export function registerSecretTools(server: McpServer): void {
     },
     async ({ value, label }) => {
       const record = await secrets.put(value, label);
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              secretId: record.id,
-              label: record.label ?? null,
-              createdAt: record.createdAt,
-              preview: redact(value, 2),
-            }),
-          },
-        ],
-      };
-    },
+      return createTextResult({
+        text: JSON.stringify({
+          secretId: record.id,
+          label: record.label ?? null,
+          createdAt: record.createdAt,
+          preview: redact(value, 2),
+        }),
+      });
+    }
   );
 
   server.tool(
@@ -40,8 +41,8 @@ export function registerSecretTools(server: McpServer): void {
     },
     async ({ secretId }) => {
       await secrets.delete(secretId);
-      return { content: [{ type: "text", text: "Secret deleted" }] };
-    },
+      return createTextResult({ text: "Secret deleted" });
+    }
   );
 
   server.tool(
@@ -60,7 +61,9 @@ export function registerSecretTools(server: McpServer): void {
       labelColumns: z
         .array(z.string())
         .optional()
-        .describe("Multiple columns to join into the label when labelColumn is not enough"),
+        .describe(
+          "Multiple columns to join into the label when labelColumn is not enough"
+        ),
       delimiter: z
         .string()
         .optional()
@@ -69,10 +72,7 @@ export function registerSecretTools(server: McpServer): void {
         .boolean()
         .optional()
         .describe("Skip rows where the value column is empty (default: true)"),
-      limit: z
-        .number()
-        .optional()
-        .describe("Maximum number of rows to import"),
+      limit: z.number().optional().describe("Maximum number of rows to import"),
     },
     async ({
       path,
@@ -86,10 +86,10 @@ export function registerSecretTools(server: McpServer): void {
       const source = await readFile(path, "utf8");
       const rows = parseCsv(source, delimiter ?? ",");
       if (rows.length === 0) {
-        return {
-          content: [{ type: "text", text: "CSV file is empty" }],
+        return createTextResult({
+          text: "CSV file is empty",
           isError: true,
-        };
+        });
       }
 
       const [header, ...body] = rows;
@@ -101,27 +101,28 @@ export function registerSecretTools(server: McpServer): void {
         normalizedHeader[0];
 
       if (!normalizedHeader.includes(valueKey)) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Value column not found: ${valueKey}`,
-            },
-          ],
+        return createTextResult({
+          text: `Value column not found: ${valueKey}`,
           isError: true,
-        };
+        });
       }
 
       const labelKeys =
         labelColumns && labelColumns.length > 0
           ? labelColumns
           : labelColumn
-            ? [labelColumn]
-            : normalizedHeader.filter((cell) =>
-                ["label", "name", "title", "site", "url", "username", "email"].includes(
-                  cell.toLowerCase(),
-                ),
-              );
+          ? [labelColumn]
+          : normalizedHeader.filter((cell) =>
+              [
+                "label",
+                "name",
+                "title",
+                "site",
+                "url",
+                "username",
+                "email",
+              ].includes(cell.toLowerCase())
+            );
 
       const maxRows = typeof limit === "number" ? limit : body.length;
       const imported: Array<Record<string, unknown>> = [];
@@ -133,7 +134,7 @@ export function registerSecretTools(server: McpServer): void {
         }
 
         const record = Object.fromEntries(
-          normalizedHeader.map((key, i) => [key, row[i] ?? ""]),
+          normalizedHeader.map((key, i) => [key, row[i] ?? ""])
         );
         const value = String(record[valueKey] ?? "");
         if (!value.trim()) {
@@ -156,25 +157,16 @@ export function registerSecretTools(server: McpServer): void {
         });
       }
 
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              {
-                importedCount: imported.length,
-                skippedCount: skipped,
-                valueColumn: valueKey,
-                labelColumns: labelKeys,
-                entries: imported,
-              },
-              null,
-              2,
-            ),
-          },
-        ],
-      };
-    },
+      return createJsonResult({
+        data: {
+          importedCount: imported.length,
+          skippedCount: skipped,
+          valueColumn: valueKey,
+          labelColumns: labelKeys,
+          entries: imported,
+        },
+      });
+    }
   );
 
   server.tool(
@@ -183,7 +175,9 @@ export function registerSecretTools(server: McpServer): void {
     {
       tabId: z.number().optional().describe("Tab ID (default: active tab)"),
       selector: z.string().describe("CSS selector of input element"),
-      secretId: z.string().describe("Secret handle returned by secret_store_put"),
+      secretId: z
+        .string()
+        .describe("Secret handle returned by secret_store_put"),
       clear: z
         .boolean()
         .optional()
@@ -196,64 +190,7 @@ export function registerSecretTools(server: McpServer): void {
         secretId,
         clear,
       });
-      return {
-        content: [
-          { type: "text", text: res.success ? "Secret typed" : res.error! },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(res.success, "Secret typed", res.error);
+    }
   );
-}
-
-function parseCsv(source: string, delimiter: string): string[][] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let cell = "";
-  let inQuotes = false;
-
-  for (let i = 0; i < source.length; i += 1) {
-    const char = source[i];
-    const next = source[i + 1];
-
-    if (char === '"') {
-      if (inQuotes && next === '"') {
-        cell += '"';
-        i += 1;
-      } else {
-        inQuotes = !inQuotes;
-      }
-      continue;
-    }
-
-    if (!inQuotes && char === delimiter) {
-      row.push(cell);
-      cell = "";
-      continue;
-    }
-
-    if (!inQuotes && (char === "\n" || char === "\r")) {
-      if (char === "\r" && next === "\n") {
-        i += 1;
-      }
-      row.push(cell);
-      if (row.some((entry) => entry.length > 0)) {
-        rows.push(row);
-      }
-      row = [];
-      cell = "";
-      continue;
-    }
-
-    cell += char;
-  }
-
-  if (cell.length > 0 || row.length > 0) {
-    row.push(cell);
-    if (row.some((entry) => entry.length > 0)) {
-      rows.push(row);
-    }
-  }
-
-  return rows;
 }

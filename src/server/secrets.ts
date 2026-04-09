@@ -1,4 +1,9 @@
-import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  randomBytes,
+  randomUUID,
+} from "node:crypto";
 
 export interface SecretRecord {
   id: string;
@@ -56,7 +61,7 @@ export class InMemorySecretStore implements SecretStore {
     const decipher = createDecipheriv(
       ALGORITHM,
       this.key,
-      Buffer.from(record.iv, "base64"),
+      Buffer.from(record.iv, "base64")
     );
     decipher.setAuthTag(Buffer.from(record.authTag, "base64"));
     const plaintext = Buffer.concat([

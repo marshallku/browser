@@ -3,75 +3,72 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import WebSocket from "ws";
-import type {
-    BridgeAction,
-    BridgeResponse,
-} from "../../shared/protocol.js";
+import type { BridgeAction, BridgeResponse } from "../../shared/protocol.js";
 import type { BrowserDriver } from "../bridge.js";
 
 type JsonObject = Record<string, unknown>;
 
 interface CdpOptions {
-    mode: "chromium-cdp" | "external-cdp";
-    executablePath?: string;
-    userDataDir?: string;
-    debugPort: number;
-    headless: boolean;
-    startupTimeoutMs: number;
+  mode: "chromium-cdp" | "external-cdp";
+  executablePath?: string;
+  userDataDir?: string;
+  debugPort: number;
+  headless: boolean;
+  startupTimeoutMs: number;
 }
 
 interface PendingRequest {
-    resolve: (value: unknown) => void;
-    reject: (reason?: unknown) => void;
-    timer: ReturnType<typeof setTimeout>;
+  resolve: (value: unknown) => void;
+  reject: (reason?: unknown) => void;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 interface CdpResponse {
-    id?: number;
-    result?: unknown;
-    error?: { message?: string };
-    method?: string;
-    params?: JsonObject;
-    sessionId?: string;
+  id?: number;
+  result?: unknown;
+  error?: { message?: string };
+  method?: string;
+  params?: JsonObject;
+  sessionId?: string;
 }
 
 interface TargetInfo {
-    targetId: string;
-    title: string;
-    url: string;
-    attached?: boolean;
-    type: string;
+  targetId: string;
+  title: string;
+  url: string;
+  attached?: boolean;
+  type: string;
 }
 
 interface ConsoleEntry {
-    level: string;
-    text: string;
-    timestamp: number;
+  level: string;
+  text: string;
+  timestamp: number;
 }
 
 interface ErrorEntry {
-    message: string;
-    source?: string;
-    line?: number;
-    column?: number;
-    timestamp: number;
+  message: string;
+  source?: string;
+  line?: number;
+  column?: number;
+  timestamp: number;
 }
 
 interface DialogInfo {
-    type: string;
-    message: string;
-    defaultPrompt?: string;
-    timestamp: number;
+  type: string;
+  message: string;
+  defaultPrompt?: string;
+  timestamp: number;
 }
 
 interface TargetState {
-    sessionId: string;
-    consoleLogs: ConsoleEntry[];
-    pageErrors: ErrorEntry[];
-    lastDialog: DialogInfo | null;
-    dialogBehavior: { action: "accept" | "dismiss"; text?: string };
-    annotations: Map<number, string>;
-    networkPending: number;
+  sessionId: string;
+  consoleLogs: ConsoleEntry[];
+  pageErrors: ErrorEntry[];
+  lastDialog: DialogInfo | null;
+  dialogBehavior: { action: "accept" | "dismiss"; text?: string };
+  annotations: Map<number, string>;
+  networkPending: number;
 }
 
 const MAX_CONSOLE_ENTRIES = 200;
@@ -79,566 +76,579 @@ const MAX_ERROR_ENTRIES = 100;
 const CDP_TIMEOUT = 15_000;
 
 export class CdpBrowserDriver implements BrowserDriver {
-    private readonly options: CdpOptions;
-    private child: ChildProcess | null = null;
-    private socket: WebSocket | null = null;
-    private nextId = 1;
-    private activeTargetId: string | null = null;
-    private readonly pending = new Map<number, PendingRequest>();
-    private readonly sessions = new Map<string, TargetState>();
-    private readonly eventHandlers = new Map<string, Array<(params: JsonObject, sessionId?: string) => void>>();
+  private readonly options: CdpOptions;
+  private child: ChildProcess | null = null;
+  private socket: WebSocket | null = null;
+  private nextId = 1;
+  private activeTargetId: string | null = null;
+  private readonly pending = new Map<number, PendingRequest>();
+  private readonly sessions = new Map<string, TargetState>();
+  private readonly eventHandlers = new Map<
+    string,
+    Array<(params: JsonObject, sessionId?: string) => void>
+  >();
 
-    constructor(options: CdpOptions) {
-        this.options = options;
+  constructor(options: CdpOptions) {
+    this.options = options;
+  }
+
+  async init(): Promise<void> {
+    if (this.options.mode === "chromium-cdp") {
+      await this.launchBrowser();
     }
 
-    async init(): Promise<void> {
-        if (this.options.mode === "chromium-cdp") {
-            await this.launchBrowser();
-        }
+    const wsUrl = await this.getWebSocketUrl();
+    await this.connect(wsUrl);
+    await this.sendCommand("Target.setDiscoverTargets", { discover: true });
 
-        const wsUrl = await this.getWebSocketUrl();
-        await this.connect(wsUrl);
-        await this.sendCommand("Target.setDiscoverTargets", { discover: true });
+    this.on("Target.targetDestroyed", (params) => {
+      const targetId = params.targetId as string;
+      const state = this.sessions.get(targetId);
+      if (state) {
+        this.sessions.delete(targetId);
+      }
+      if (this.activeTargetId === targetId) {
+        this.activeTargetId = null;
+      }
+    });
+  }
 
-        this.on("Target.targetDestroyed", (params) => {
-            const targetId = params.targetId as string;
-            const state = this.sessions.get(targetId);
-            if (state) {
-                this.sessions.delete(targetId);
-            }
-            if (this.activeTargetId === targetId) {
-                this.activeTargetId = null;
-            }
+  async close(): Promise<void> {
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error("Browser runtime closed"));
+    }
+    this.pending.clear();
+
+    for (const [targetId, state] of this.sessions) {
+      try {
+        await this.sendCommand("Target.detachFromTarget", {
+          sessionId: state.sessionId,
         });
+      } catch {
+        // ignore detach errors during shutdown
+      }
+    }
+    this.sessions.clear();
+
+    if (this.socket) {
+      this.socket.close();
+      this.socket = null;
     }
 
-    async close(): Promise<void> {
-        for (const pending of this.pending.values()) {
-            clearTimeout(pending.timer);
-            pending.reject(new Error("Browser runtime closed"));
-        }
-        this.pending.clear();
-
-        for (const [targetId, state] of this.sessions) {
-            try {
-                await this.sendCommand("Target.detachFromTarget", {
-                    sessionId: state.sessionId,
-                });
-            } catch {
-                // ignore detach errors during shutdown
-            }
-        }
-        this.sessions.clear();
-
-        if (this.socket) {
-            this.socket.close();
-            this.socket = null;
-        }
-
-        if (this.child && !this.child.killed) {
-            this.child.kill("SIGTERM");
-            this.child = null;
-        }
+    if (this.child && !this.child.killed) {
+      this.child.kill("SIGTERM");
+      this.child = null;
     }
+  }
 
-    async execute(
-        action: BridgeAction,
-        params: Record<string, unknown>,
-    ): Promise<BridgeResponse> {
-        const id = randomUUID();
+  async execute(
+    action: BridgeAction,
+    params: Record<string, unknown>
+  ): Promise<BridgeResponse> {
+    const id = randomUUID();
 
-        try {
-            const data = await this.dispatch(action, params);
-            return { id, success: true, data };
-        } catch (error) {
-            return {
-                id,
-                success: false,
-                error: error instanceof Error ? error.message : String(error),
-            };
-        }
+    try {
+      const data = await this.dispatch(action, params);
+      return { id, success: true, data };
+    } catch (error) {
+      return {
+        id,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
+  }
 
-    private async unsupported(message: string): Promise<never> {
-        throw new Error(message);
+  private async unsupported(message: string): Promise<never> {
+    throw new Error(message);
+  }
+
+  // -- Event system --
+
+  private on(
+    method: string,
+    handler: (params: JsonObject, sessionId?: string) => void
+  ): void {
+    const handlers = this.eventHandlers.get(method) ?? [];
+    handlers.push(handler);
+    this.eventHandlers.set(method, handlers);
+  }
+
+  private emit(method: string, params: JsonObject, sessionId?: string): void {
+    const handlers = this.eventHandlers.get(method);
+    if (handlers) {
+      for (const handler of handlers) {
+        handler(params, sessionId);
+      }
     }
+  }
 
-    // -- Event system --
+  // -- Dispatch --
 
-    private on(method: string, handler: (params: JsonObject, sessionId?: string) => void): void {
-        const handlers = this.eventHandlers.get(method) ?? [];
-        handlers.push(handler);
-        this.eventHandlers.set(method, handlers);
-    }
+  private async dispatch(
+    action: BridgeAction,
+    params: Record<string, unknown>
+  ): Promise<unknown> {
+    switch (action) {
+      case "tabs.list":
+        return this.listTabs();
+      case "tabs.open":
+        return this.openTab(String(params.url ?? "about:blank"));
+      case "tabs.close":
+        return this.closeTab(await this.requireTargetId(params));
+      case "tabs.navigate":
+        return this.navigate(
+          await this.resolveTargetId(params),
+          String(params.url ?? "")
+        );
+      case "tabs.activate":
+        return this.activateTab(await this.requireTargetId(params));
+      case "tabs.goBack":
+        return this.evaluate(
+          await this.resolveTargetId(params),
+          "history.back(); null;"
+        );
+      case "tabs.goForward":
+        return this.evaluate(
+          await this.resolveTargetId(params),
+          "history.forward(); null;"
+        );
+      case "tabs.reload":
+        return this.reload(await this.resolveTargetId(params));
 
-    private emit(method: string, params: JsonObject, sessionId?: string): void {
-        const handlers = this.eventHandlers.get(method);
-        if (handlers) {
-            for (const handler of handlers) {
-                handler(params, sessionId);
-            }
-        }
-    }
+      case "dom.getHtml":
+        return this.getHtml(params);
+      case "dom.getText":
+        return this.getText(params);
+      case "dom.contentSummary":
+        return this.unsupported(
+          "Content summary is not implemented in the CDP runtime"
+        );
+      case "dom.querySelector":
+        return this.querySelector(params);
+      case "dom.formValues":
+        return this.getFormValues(params);
+      case "dom.accessibilityTree":
+        return this.getAccessibilityTree(params);
 
-    // -- Dispatch --
-
-    private async dispatch(
-        action: BridgeAction,
-        params: Record<string, unknown>,
-    ): Promise<unknown> {
-        switch (action) {
-            case "tabs.list":
-                return this.listTabs();
-            case "tabs.open":
-                return this.openTab(String(params.url ?? "about:blank"));
-            case "tabs.close":
-                return this.closeTab(await this.requireTargetId(params));
-            case "tabs.navigate":
-                return this.navigate(
-                    await this.resolveTargetId(params),
-                    String(params.url ?? ""),
-                );
-            case "tabs.activate":
-                return this.activateTab(await this.requireTargetId(params));
-            case "tabs.goBack":
-                return this.evaluate(
-                    await this.resolveTargetId(params),
-                    "history.back(); null;",
-                );
-            case "tabs.goForward":
-                return this.evaluate(
-                    await this.resolveTargetId(params),
-                    "history.forward(); null;",
-                );
-            case "tabs.reload":
-                return this.reload(await this.resolveTargetId(params));
-
-            case "dom.getHtml":
-                return this.getHtml(params);
-            case "dom.getText":
-                return this.getText(params);
-            case "dom.contentSummary":
-                return this.unsupported("Content summary is not implemented in the CDP runtime");
-            case "dom.querySelector":
-                return this.querySelector(params);
-            case "dom.formValues":
-                return this.getFormValues(params);
-            case "dom.accessibilityTree":
-                return this.getAccessibilityTree(params);
-
-            case "interaction.click":
-                return this.click(params);
+      case "interaction.click":
+        return this.click(params);
       case "interaction.type":
         return this.typeText(params);
       case "interaction.typeSecret":
-        return this.unsupported("Secret typing is not implemented in the CDP runtime");
+        return this.unsupported(
+          "Secret typing is not implemented in the CDP runtime"
+        );
       case "interaction.scroll":
-                return this.scroll(params);
-            case "interaction.pressKey":
-                return this.pressKey(params);
-            case "interaction.selectOption":
-                return this.selectOption(params);
-            case "interaction.check":
-                return this.checkElement(params);
-            case "interaction.clickAnnotation":
-                return this.clickAnnotation(params);
-            case "interaction.typeAnnotation":
-                return this.typeAnnotation(params);
+        return this.scroll(params);
+      case "interaction.pressKey":
+        return this.pressKey(params);
+      case "interaction.selectOption":
+        return this.selectOption(params);
+      case "interaction.check":
+        return this.checkElement(params);
+      case "interaction.clickAnnotation":
+        return this.clickAnnotation(params);
+      case "interaction.typeAnnotation":
+        return this.typeAnnotation(params);
 
-            case "capture.screenshot":
-                return this.captureScreenshot(params);
-            case "capture.computedStyles":
-                return this.getComputedStyles(params);
-            case "capture.elementRect":
-                return this.getElementRect(params);
-            case "capture.metrics":
-                return this.getPageMetrics(params);
-            case "capture.annotate":
-                return this.annotatePage(params);
-            case "capture.clearAnnotations":
-                return this.clearAnnotations(params);
-            case "capture.highlight":
-                return this.highlightElement(params);
+      case "capture.screenshot":
+        return this.captureScreenshot(params);
+      case "capture.computedStyles":
+        return this.getComputedStyles(params);
+      case "capture.elementRect":
+        return this.getElementRect(params);
+      case "capture.metrics":
+        return this.getPageMetrics(params);
+      case "capture.annotate":
+        return this.annotatePage(params);
+      case "capture.clearAnnotations":
+        return this.clearAnnotations(params);
+      case "capture.highlight":
+        return this.highlightElement(params);
 
-            case "execution.executeJs":
-                return this.evaluate(
-                    await this.resolveTargetId(params),
-                    String(params.code ?? ""),
-                );
-
-            case "wait.selector":
-                return this.waitForSelector(params);
-            case "wait.navigation":
-                return this.waitForNavigation(params);
-            case "wait.networkIdle":
-                return this.waitForNetworkIdle(params);
-
-            case "cookies.get":
-                return this.getCookies(String(params.url ?? ""));
-            case "cookies.set":
-                return this.setCookie(params);
-            case "cookies.delete":
-                return this.deleteCookie(params);
-
-            case "storage.get":
-                return this.getStorage(params);
-            case "storage.set":
-                return this.setStorage(params);
-            case "storage.clear":
-                return this.clearStorage(params);
-
-            case "dialog.setBehavior":
-                return this.setDialogBehavior(params);
-            case "dialog.getLast":
-                return this.getLastDialog(params);
-
-            case "monitor.consoleLogs":
-                return this.getConsoleLogs(params);
-            case "monitor.pageErrors":
-                return this.getPageErrors(params);
-
-            default:
-                throw new Error(`Unsupported action: ${action satisfies never}`);
-        }
-    }
-
-    // -- Browser lifecycle --
-
-    private async launchBrowser(): Promise<void> {
-        const executable =
-            this.options.executablePath ??
-            [
-                "/usr/bin/chromium",
-                "/usr/bin/chromium-browser",
-                "/usr/bin/google-chrome",
-                "/usr/bin/google-chrome-stable",
-            ].find((candidate) => existsSync(candidate)) ??
-            undefined;
-
-        if (!executable) {
-            throw new Error(
-                "No Chromium-compatible browser found. Set BROWSER_EXECUTABLE or use BROWSER_RUNTIME=external-cdp.",
-            );
-        }
-
-        const args = [
-            `--remote-debugging-port=${this.options.debugPort}`,
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-dev-shm-usage",
-            "--disable-background-networking",
-            "--disable-sync",
-            "--disable-extensions",
-            "--disable-gpu",
-            "--no-sandbox",
-            this.options.headless ? "--headless=new" : "",
-            this.options.userDataDir
-                ? `--user-data-dir=${this.options.userDataDir}`
-                : "",
-            "about:blank",
-        ].filter(Boolean);
-
-        this.child = spawn(executable, args, {
-            stdio: "ignore",
-            detached: false,
-        });
-
-        const deadline = Date.now() + this.options.startupTimeoutMs;
-        while (Date.now() < deadline) {
-            try {
-                await this.getWebSocketUrl();
-                return;
-            } catch {
-                await sleep(250);
-            }
-        }
-
-        throw new Error("Timed out waiting for the Chromium CDP endpoint");
-    }
-
-    private async getWebSocketUrl(): Promise<string> {
-        const response = await fetch(
-            `http://127.0.0.1:${this.options.debugPort}/json/version`,
+      case "execution.executeJs":
+        return this.evaluate(
+          await this.resolveTargetId(params),
+          String(params.code ?? "")
         );
 
-        if (!response.ok) {
-            throw new Error(`CDP version endpoint returned ${response.status}`);
-        }
+      case "wait.selector":
+        return this.waitForSelector(params);
+      case "wait.navigation":
+        return this.waitForNavigation(params);
+      case "wait.networkIdle":
+        return this.waitForNetworkIdle(params);
 
-        const payload = (await response.json()) as {
-            webSocketDebuggerUrl?: string;
-        };
+      case "cookies.get":
+        return this.getCookies(String(params.url ?? ""));
+      case "cookies.set":
+        return this.setCookie(params);
+      case "cookies.delete":
+        return this.deleteCookie(params);
 
-        if (!payload.webSocketDebuggerUrl) {
-            throw new Error(
-                "CDP version endpoint did not return webSocketDebuggerUrl",
-            );
-        }
+      case "storage.get":
+        return this.getStorage(params);
+      case "storage.set":
+        return this.setStorage(params);
+      case "storage.clear":
+        return this.clearStorage(params);
 
-        return payload.webSocketDebuggerUrl;
+      case "dialog.setBehavior":
+        return this.setDialogBehavior(params);
+      case "dialog.getLast":
+        return this.getLastDialog(params);
+
+      case "monitor.consoleLogs":
+        return this.getConsoleLogs(params);
+      case "monitor.pageErrors":
+        return this.getPageErrors(params);
+
+      default:
+        throw new Error(`Unsupported action: ${action satisfies never}`);
+    }
+  }
+
+  // -- Browser lifecycle --
+
+  private async launchBrowser(): Promise<void> {
+    const executable =
+      this.options.executablePath ??
+      [
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+      ].find((candidate) => existsSync(candidate)) ??
+      undefined;
+
+    if (!executable) {
+      throw new Error(
+        "No Chromium-compatible browser found. Set BROWSER_EXECUTABLE or use BROWSER_RUNTIME=external-cdp."
+      );
     }
 
-    private async connect(wsUrl: string): Promise<void> {
-        this.socket = new WebSocket(wsUrl);
+    const args = [
+      `--remote-debugging-port=${this.options.debugPort}`,
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--disable-dev-shm-usage",
+      "--disable-background-networking",
+      "--disable-sync",
+      "--disable-extensions",
+      "--disable-gpu",
+      "--no-sandbox",
+      this.options.headless ? "--headless=new" : "",
+      this.options.userDataDir
+        ? `--user-data-dir=${this.options.userDataDir}`
+        : "",
+      "about:blank",
+    ].filter(Boolean);
 
-        await new Promise<void>((resolve, reject) => {
-            const timeout = setTimeout(() => {
-                reject(new Error("Timed out connecting to the CDP websocket"));
-            }, this.options.startupTimeoutMs);
+    this.child = spawn(executable, args, {
+      stdio: "ignore",
+      detached: false,
+    });
 
-            this.socket!.once("open", () => {
-                clearTimeout(timeout);
-                resolve();
-            });
-            this.socket!.once("error", (error) => {
-                clearTimeout(timeout);
-                reject(error);
-            });
-            this.socket!.on("message", (raw) =>
-                this.handleMessage(String(raw)),
-            );
-        });
+    const deadline = Date.now() + this.options.startupTimeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        await this.getWebSocketUrl();
+        return;
+      } catch {
+        await sleep(250);
+      }
     }
 
-    private handleMessage(raw: string): void {
-        const message = JSON.parse(raw) as CdpResponse;
+    throw new Error("Timed out waiting for the Chromium CDP endpoint");
+  }
 
-        if (typeof message.id === "number") {
-            const pending = this.pending.get(message.id);
-            if (!pending) {
-                return;
-            }
+  private async getWebSocketUrl(): Promise<string> {
+    const response = await fetch(
+      `http://127.0.0.1:${this.options.debugPort}/json/version`
+    );
 
-            clearTimeout(pending.timer);
-            this.pending.delete(message.id);
-
-            if (message.error?.message) {
-                pending.reject(new Error(message.error.message));
-                return;
-            }
-
-            pending.resolve(message.result);
-            return;
-        }
-
-        if (message.method && message.params) {
-            this.emit(
-                message.method,
-                message.params,
-                message.sessionId,
-            );
-        }
+    if (!response.ok) {
+      throw new Error(`CDP version endpoint returned ${response.status}`);
     }
 
-    private async sendCommand(
-        method: string,
-        params: JsonObject = {},
-        sessionId?: string,
-    ): Promise<unknown> {
-        if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-            throw new Error("CDP websocket is not connected");
-        }
+    const payload = (await response.json()) as {
+      webSocketDebuggerUrl?: string;
+    };
 
-        const id = this.nextId++;
-        const payload: JsonObject = { id, method, params };
-        if (sessionId) {
-            payload.sessionId = sessionId;
-        }
-
-        return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => {
-                this.pending.delete(id);
-                reject(new Error(`CDP command timed out: ${method}`));
-            }, CDP_TIMEOUT);
-
-            this.pending.set(id, { resolve, reject, timer });
-            this.socket!.send(JSON.stringify(payload));
-        });
+    if (!payload.webSocketDebuggerUrl) {
+      throw new Error(
+        "CDP version endpoint did not return webSocketDebuggerUrl"
+      );
     }
 
-    // -- Session management (persistent per target) --
+    return payload.webSocketDebuggerUrl;
+  }
 
-    private async getSession(targetId: string): Promise<TargetState> {
-        const existing = this.sessions.get(targetId);
-        if (existing) {
-            return existing;
-        }
+  private async connect(wsUrl: string): Promise<void> {
+    this.socket = new WebSocket(wsUrl);
 
-        const result = (await this.sendCommand("Target.attachToTarget", {
-            targetId,
-            flatten: true,
-        })) as { sessionId: string };
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error("Timed out connecting to the CDP websocket"));
+      }, this.options.startupTimeoutMs);
 
-        const state: TargetState = {
-            sessionId: result.sessionId,
-            consoleLogs: [],
-            pageErrors: [],
-            lastDialog: null,
-            dialogBehavior: { action: "accept" },
-            annotations: new Map(),
-            networkPending: 0,
-        };
+      this.socket!.once("open", () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+      this.socket!.once("error", (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+      this.socket!.on("message", (raw) => this.handleMessage(String(raw)));
+    });
+  }
 
-        this.sessions.set(targetId, state);
+  private handleMessage(raw: string): void {
+    const message = JSON.parse(raw) as CdpResponse;
 
-        // Enable domains for this session
-        await Promise.all([
-            this.sendCommand("Runtime.enable", {}, result.sessionId),
-            this.sendCommand("Page.enable", {}, result.sessionId),
-            this.sendCommand("Network.enable", {}, result.sessionId),
-            this.sendCommand("DOM.enable", {}, result.sessionId),
-        ]);
+    if (typeof message.id === "number") {
+      const pending = this.pending.get(message.id);
+      if (!pending) {
+        return;
+      }
 
-        // Wire up event handlers for this session
-        this.on("Runtime.consoleAPICalled", (params, sid) => {
-            if (sid !== result.sessionId) return;
-            const args = (params.args as Array<{ value?: unknown; description?: string }>) ?? [];
-            const text = args
-                .map((arg) => arg.value !== undefined ? String(arg.value) : arg.description ?? "")
-                .join(" ");
-            state.consoleLogs.push({
-                level: String(params.type ?? "log"),
-                text,
-                timestamp: Date.now(),
-            });
-            if (state.consoleLogs.length > MAX_CONSOLE_ENTRIES) {
-                state.consoleLogs.splice(0, state.consoleLogs.length - MAX_CONSOLE_ENTRIES);
-            }
-        });
+      clearTimeout(pending.timer);
+      this.pending.delete(message.id);
 
-        this.on("Runtime.exceptionThrown", (params, sid) => {
-            if (sid !== result.sessionId) return;
-            const detail = params.exceptionDetails as JsonObject | undefined;
-            const exception = detail?.exception as JsonObject | undefined;
-            state.pageErrors.push({
-                message: exception?.description as string ?? detail?.text as string ?? "Unknown error",
-                source: detail?.url as string | undefined,
-                line: detail?.lineNumber as number | undefined,
-                column: detail?.columnNumber as number | undefined,
-                timestamp: Date.now(),
-            });
-            if (state.pageErrors.length > MAX_ERROR_ENTRIES) {
-                state.pageErrors.splice(0, state.pageErrors.length - MAX_ERROR_ENTRIES);
-            }
-        });
+      if (message.error?.message) {
+        pending.reject(new Error(message.error.message));
+        return;
+      }
 
-        this.on("Page.javascriptDialogOpening", (params, sid) => {
-            if (sid !== result.sessionId) return;
-            state.lastDialog = {
-                type: String(params.type ?? "alert"),
-                message: String(params.message ?? ""),
-                defaultPrompt: params.defaultPrompt as string | undefined,
-                timestamp: Date.now(),
-            };
-            this.sendCommand(
-                "Page.handleJavaScriptDialog",
-                {
-                    accept: state.dialogBehavior.action === "accept",
-                    promptText: state.dialogBehavior.text,
-                },
-                result.sessionId,
-            ).catch(() => {
-                // dialog may already be dismissed
-            });
-        });
-
-        this.on("Network.requestWillBeSent", (_params, sid) => {
-            if (sid !== result.sessionId) return;
-            state.networkPending++;
-        });
-
-        this.on("Network.loadingFinished", (_params, sid) => {
-            if (sid !== result.sessionId) return;
-            state.networkPending = Math.max(0, state.networkPending - 1);
-        });
-
-        this.on("Network.loadingFailed", (_params, sid) => {
-            if (sid !== result.sessionId) return;
-            state.networkPending = Math.max(0, state.networkPending - 1);
-        });
-
-        return state;
+      pending.resolve(message.result);
+      return;
     }
 
-    // -- Tab management --
+    if (message.method && message.params) {
+      this.emit(message.method, message.params, message.sessionId);
+    }
+  }
 
-    private async listTabs(): Promise<Array<Record<string, unknown>>> {
-        const result = (await this.sendCommand("Target.getTargets")) as {
-            targetInfos?: TargetInfo[];
-        };
-        const tabs = (result.targetInfos ?? []).filter(
-            (info) => info.type === "page",
+  private async sendCommand(
+    method: string,
+    params: JsonObject = {},
+    sessionId?: string
+  ): Promise<unknown> {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      throw new Error("CDP websocket is not connected");
+    }
+
+    const id = this.nextId++;
+    const payload: JsonObject = { id, method, params };
+    if (sessionId) {
+      payload.sessionId = sessionId;
+    }
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`CDP command timed out: ${method}`));
+      }, CDP_TIMEOUT);
+
+      this.pending.set(id, { resolve, reject, timer });
+      this.socket!.send(JSON.stringify(payload));
+    });
+  }
+
+  // -- Session management (persistent per target) --
+
+  private async getSession(targetId: string): Promise<TargetState> {
+    const existing = this.sessions.get(targetId);
+    if (existing) {
+      return existing;
+    }
+
+    const result = (await this.sendCommand("Target.attachToTarget", {
+      targetId,
+      flatten: true,
+    })) as { sessionId: string };
+
+    const state: TargetState = {
+      sessionId: result.sessionId,
+      consoleLogs: [],
+      pageErrors: [],
+      lastDialog: null,
+      dialogBehavior: { action: "accept" },
+      annotations: new Map(),
+      networkPending: 0,
+    };
+
+    this.sessions.set(targetId, state);
+
+    // Enable domains for this session
+    await Promise.all([
+      this.sendCommand("Runtime.enable", {}, result.sessionId),
+      this.sendCommand("Page.enable", {}, result.sessionId),
+      this.sendCommand("Network.enable", {}, result.sessionId),
+      this.sendCommand("DOM.enable", {}, result.sessionId),
+    ]);
+
+    // Wire up event handlers for this session
+    this.on("Runtime.consoleAPICalled", (params, sid) => {
+      if (sid !== result.sessionId) return;
+      const args =
+        (params.args as Array<{ value?: unknown; description?: string }>) ?? [];
+      const text = args
+        .map((arg) =>
+          arg.value !== undefined ? String(arg.value) : arg.description ?? ""
+        )
+        .join(" ");
+      state.consoleLogs.push({
+        level: String(params.type ?? "log"),
+        text,
+        timestamp: Date.now(),
+      });
+      if (state.consoleLogs.length > MAX_CONSOLE_ENTRIES) {
+        state.consoleLogs.splice(
+          0,
+          state.consoleLogs.length - MAX_CONSOLE_ENTRIES
         );
-        if (!this.activeTargetId && tabs[0]) {
-            this.activeTargetId = tabs[0].targetId;
-        }
-        return tabs.map((tab, index) => ({
-            tabId: index + 1,
-            targetId: tab.targetId,
-            title: tab.title,
-            url: tab.url,
-            active: tab.targetId === this.activeTargetId,
-        }));
+      }
+    });
+
+    this.on("Runtime.exceptionThrown", (params, sid) => {
+      if (sid !== result.sessionId) return;
+      const detail = params.exceptionDetails as JsonObject | undefined;
+      const exception = detail?.exception as JsonObject | undefined;
+      state.pageErrors.push({
+        message:
+          (exception?.description as string) ??
+          (detail?.text as string) ??
+          "Unknown error",
+        source: detail?.url as string | undefined,
+        line: detail?.lineNumber as number | undefined,
+        column: detail?.columnNumber as number | undefined,
+        timestamp: Date.now(),
+      });
+      if (state.pageErrors.length > MAX_ERROR_ENTRIES) {
+        state.pageErrors.splice(0, state.pageErrors.length - MAX_ERROR_ENTRIES);
+      }
+    });
+
+    this.on("Page.javascriptDialogOpening", (params, sid) => {
+      if (sid !== result.sessionId) return;
+      state.lastDialog = {
+        type: String(params.type ?? "alert"),
+        message: String(params.message ?? ""),
+        defaultPrompt: params.defaultPrompt as string | undefined,
+        timestamp: Date.now(),
+      };
+      this.sendCommand(
+        "Page.handleJavaScriptDialog",
+        {
+          accept: state.dialogBehavior.action === "accept",
+          promptText: state.dialogBehavior.text,
+        },
+        result.sessionId
+      ).catch(() => {
+        // dialog may already be dismissed
+      });
+    });
+
+    this.on("Network.requestWillBeSent", (_params, sid) => {
+      if (sid !== result.sessionId) return;
+      state.networkPending++;
+    });
+
+    this.on("Network.loadingFinished", (_params, sid) => {
+      if (sid !== result.sessionId) return;
+      state.networkPending = Math.max(0, state.networkPending - 1);
+    });
+
+    this.on("Network.loadingFailed", (_params, sid) => {
+      if (sid !== result.sessionId) return;
+      state.networkPending = Math.max(0, state.networkPending - 1);
+    });
+
+    return state;
+  }
+
+  // -- Tab management --
+
+  private async listTabs(): Promise<Array<Record<string, unknown>>> {
+    const result = (await this.sendCommand("Target.getTargets")) as {
+      targetInfos?: TargetInfo[];
+    };
+    const tabs = (result.targetInfos ?? []).filter(
+      (info) => info.type === "page"
+    );
+    if (!this.activeTargetId && tabs[0]) {
+      this.activeTargetId = tabs[0].targetId;
     }
+    return tabs.map((tab, index) => ({
+      tabId: index + 1,
+      targetId: tab.targetId,
+      title: tab.title,
+      url: tab.url,
+      active: tab.targetId === this.activeTargetId,
+    }));
+  }
 
-    private async openTab(url: string): Promise<Record<string, unknown>> {
-        const result = (await this.sendCommand("Target.createTarget", {
-            url,
-        })) as { targetId: string };
-        this.activeTargetId = result.targetId;
-        // Eagerly attach so event capture starts immediately
-        await this.getSession(result.targetId);
-        const tabs = await this.listTabs();
-        const tab = tabs.find(
-            (entry) => entry.targetId === result.targetId,
-        );
-        return { tabId: tab?.tabId ?? 1, targetId: result.targetId, url };
+  private async openTab(url: string): Promise<Record<string, unknown>> {
+    const result = (await this.sendCommand("Target.createTarget", {
+      url,
+    })) as { targetId: string };
+    this.activeTargetId = result.targetId;
+    // Eagerly attach so event capture starts immediately
+    await this.getSession(result.targetId);
+    const tabs = await this.listTabs();
+    const tab = tabs.find((entry) => entry.targetId === result.targetId);
+    return { tabId: tab?.tabId ?? 1, targetId: result.targetId, url };
+  }
+
+  private async closeTab(targetId: string): Promise<null> {
+    this.sessions.delete(targetId);
+    await this.sendCommand("Target.closeTarget", { targetId });
+    if (this.activeTargetId === targetId) {
+      this.activeTargetId = null;
     }
+    return null;
+  }
 
-    private async closeTab(targetId: string): Promise<null> {
-        this.sessions.delete(targetId);
-        await this.sendCommand("Target.closeTarget", { targetId });
-        if (this.activeTargetId === targetId) {
-            this.activeTargetId = null;
-        }
-        return null;
-    }
+  private async navigate(
+    targetId: string,
+    url: string
+  ): Promise<Record<string, unknown>> {
+    const session = await this.getSession(targetId);
+    await this.sendCommand("Page.navigate", { url }, session.sessionId);
+    await this.waitForReadyState(targetId, 30_000);
+    return { url };
+  }
 
-    private async navigate(
-        targetId: string,
-        url: string,
-    ): Promise<Record<string, unknown>> {
-        const session = await this.getSession(targetId);
-        await this.sendCommand("Page.navigate", { url }, session.sessionId);
-        await this.waitForReadyState(targetId, 30_000);
-        return { url };
-    }
+  private async activateTab(targetId: string): Promise<null> {
+    await this.sendCommand("Target.activateTarget", { targetId });
+    this.activeTargetId = targetId;
+    return null;
+  }
 
-    private async activateTab(targetId: string): Promise<null> {
-        await this.sendCommand("Target.activateTarget", { targetId });
-        this.activeTargetId = targetId;
-        return null;
-    }
+  private async reload(targetId: string): Promise<null> {
+    const session = await this.getSession(targetId);
+    await this.sendCommand("Page.reload", {}, session.sessionId);
+    await this.waitForReadyState(targetId, 30_000);
+    return null;
+  }
 
-    private async reload(targetId: string): Promise<null> {
-        const session = await this.getSession(targetId);
-        await this.sendCommand("Page.reload", {}, session.sessionId);
-        await this.waitForReadyState(targetId, 30_000);
-        return null;
-    }
+  // -- DOM --
 
-    // -- DOM --
-
-    private async getHtml(params: Record<string, unknown>): Promise<string> {
-        const targetId = await this.resolveTargetId(params);
-        const selector =
-            typeof params.selector === "string" ? params.selector : "body";
-        const outer = params.outer !== false;
-        const clean = params.clean !== false;
-        const code = `
+  private async getHtml(params: Record<string, unknown>): Promise<string> {
+    const targetId = await this.resolveTargetId(params);
+    const selector =
+      typeof params.selector === "string" ? params.selector : "body";
+    const outer = params.outer !== false;
+    const clean = params.clean !== false;
+    const code = `
             (() => {
-                const node = document.querySelector(${JSON.stringify(selector)});
+                const node = document.querySelector(${JSON.stringify(
+                  selector
+                )});
                 if (!node) throw new Error("Selector not found: ${selector}");
                 const clone = node.cloneNode(true);
                 if (${JSON.stringify(clean)}) {
@@ -656,37 +666,41 @@ export class CdpBrowserDriver implements BrowserDriver {
                 return ${outer ? "clone.outerHTML" : "clone.innerHTML"};
             })()
         `;
-        return String(await this.evaluate(targetId, code));
-    }
+    return String(await this.evaluate(targetId, code));
+  }
 
-    private async getText(params: Record<string, unknown>): Promise<string> {
-        const targetId = await this.resolveTargetId(params);
-        const selector =
-            typeof params.selector === "string"
-                ? params.selector
-                : "main, article, body";
-        const raw = params.raw === true;
-        const code = `
+  private async getText(params: Record<string, unknown>): Promise<string> {
+    const targetId = await this.resolveTargetId(params);
+    const selector =
+      typeof params.selector === "string"
+        ? params.selector
+        : "main, article, body";
+    const raw = params.raw === true;
+    const code = `
             (() => {
-                const target = document.querySelector(${JSON.stringify(selector)}) ?? document.body;
+                const target = document.querySelector(${JSON.stringify(
+                  selector
+                )}) ?? document.body;
                 if (${JSON.stringify(raw)}) return target.textContent ?? "";
                 const text = target.innerText ?? target.textContent ?? "";
                 return text.replace(/\\n{3,}/g, "\\n\\n").trim();
             })()
         `;
-        return String(await this.evaluate(targetId, code));
-    }
+    return String(await this.evaluate(targetId, code));
+  }
 
-    private async querySelector(
-        params: Record<string, unknown>,
-    ): Promise<Array<Record<string, unknown>>> {
-        const targetId = await this.resolveTargetId(params);
-        const selector = String(params.selector ?? "");
-        const limit = Number(params.limit ?? 20);
-        const visibleOnly = params.visibleOnly === true;
-        const code = `
+  private async querySelector(
+    params: Record<string, unknown>
+  ): Promise<Array<Record<string, unknown>>> {
+    const targetId = await this.resolveTargetId(params);
+    const selector = String(params.selector ?? "");
+    const limit = Number(params.limit ?? 20);
+    const visibleOnly = params.visibleOnly === true;
+    const code = `
             (() => {
-                return [...document.querySelectorAll(${JSON.stringify(selector)})]
+                return [...document.querySelectorAll(${JSON.stringify(
+                  selector
+                )})]
                     .filter((el) => {
                         if (!${JSON.stringify(visibleOnly)}) return true;
                         const rect = el.getBoundingClientRect();
@@ -708,19 +722,21 @@ export class CdpBrowserDriver implements BrowserDriver {
                     });
             })()
         `;
-        return (await this.evaluate(targetId, code)) as Array<
-            Record<string, unknown>
-        >;
-    }
+    return (await this.evaluate(targetId, code)) as Array<
+      Record<string, unknown>
+    >;
+  }
 
-    private async getFormValues(
-        params: Record<string, unknown>,
-    ): Promise<Record<string, unknown>> {
-        const targetId = await this.resolveTargetId(params);
-        const selector = String(params.selector ?? "");
-        const code = `
+  private async getFormValues(
+    params: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    const targetId = await this.resolveTargetId(params);
+    const selector = String(params.selector ?? "");
+    const code = `
             (() => {
-                const form = document.querySelector(${JSON.stringify(selector)});
+                const form = document.querySelector(${JSON.stringify(
+                  selector
+                )});
                 if (!(form instanceof HTMLFormElement)) throw new Error("Form not found: ${selector}");
                 const data = {};
                 for (const el of [...form.elements]) {
@@ -734,18 +750,15 @@ export class CdpBrowserDriver implements BrowserDriver {
                 return data;
             })()
         `;
-        return (await this.evaluate(targetId, code)) as Record<
-            string,
-            unknown
-        >;
-    }
+    return (await this.evaluate(targetId, code)) as Record<string, unknown>;
+  }
 
-    private async getAccessibilityTree(
-        params: Record<string, unknown>,
-    ): Promise<string> {
-        const targetId = await this.resolveTargetId(params);
-        const maxElements = Number(params.maxElements ?? 500);
-        const code = `
+  private async getAccessibilityTree(
+    params: Record<string, unknown>
+  ): Promise<string> {
+    const targetId = await this.resolveTargetId(params);
+    const maxElements = Number(params.maxElements ?? 500);
+    const code = `
             (() => {
                 const INTERACTIVE = new Set([
                     "A", "BUTTON", "INPUT", "SELECT", "TEXTAREA", "DETAILS", "SUMMARY",
@@ -811,15 +824,15 @@ export class CdpBrowserDriver implements BrowserDriver {
                 }).join("\\n");
             })()
         `;
-        return String(await this.evaluate(targetId, code));
-    }
+    return String(await this.evaluate(targetId, code));
+  }
 
-    // -- Interaction --
+  // -- Interaction --
 
-    private async click(params: Record<string, unknown>): Promise<null> {
-        const targetId = await this.resolveTargetId(params);
-        const selector = String(params.selector ?? "");
-        const code = `
+  private async click(params: Record<string, unknown>): Promise<null> {
+    const targetId = await this.resolveTargetId(params);
+    const selector = String(params.selector ?? "");
+    const code = `
             (() => {
                 const el = document.querySelector(${JSON.stringify(selector)});
                 if (!(el instanceof HTMLElement)) throw new Error("Element not found: ${selector}");
@@ -828,16 +841,16 @@ export class CdpBrowserDriver implements BrowserDriver {
                 return null;
             })()
         `;
-        await this.evaluate(targetId, code);
-        return null;
-    }
+    await this.evaluate(targetId, code);
+    return null;
+  }
 
-    private async typeText(params: Record<string, unknown>): Promise<null> {
-        const targetId = await this.resolveTargetId(params);
-        const selector = String(params.selector ?? "");
-        const text = String(params.text ?? "");
-        const clear = params.clear !== false;
-        const code = `
+  private async typeText(params: Record<string, unknown>): Promise<null> {
+    const targetId = await this.resolveTargetId(params);
+    const selector = String(params.selector ?? "");
+    const text = String(params.text ?? "");
+    const clear = params.clear !== false;
+    const code = `
             (() => {
                 const el = document.querySelector(${JSON.stringify(selector)});
                 if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLElement && el.isContentEditable)) {
@@ -850,25 +863,27 @@ export class CdpBrowserDriver implements BrowserDriver {
                     else el.textContent = "";
                 }
                 if ("value" in el) el.value = ${JSON.stringify(text)};
-                else document.execCommand("insertText", false, ${JSON.stringify(text)});
+                else document.execCommand("insertText", false, ${JSON.stringify(
+                  text
+                )});
                 el.dispatchEvent(new Event("input", { bubbles: true }));
                 el.dispatchEvent(new Event("change", { bubbles: true }));
                 return null;
             })()
         `;
-        await this.evaluate(targetId, code);
-        return null;
-    }
+    await this.evaluate(targetId, code);
+    return null;
+  }
 
-    private async scroll(params: Record<string, unknown>): Promise<null> {
-        const targetId = await this.resolveTargetId(params);
-        const selector =
-            typeof params.selector === "string"
-                ? JSON.stringify(params.selector)
-                : "null";
-        const x = Number(params.x ?? 0);
-        const y = Number(params.y ?? 0);
-        const code = `
+  private async scroll(params: Record<string, unknown>): Promise<null> {
+    const targetId = await this.resolveTargetId(params);
+    const selector =
+      typeof params.selector === "string"
+        ? JSON.stringify(params.selector)
+        : "null";
+    const x = Number(params.x ?? 0);
+    const y = Number(params.y ?? 0);
+    const code = `
             (() => {
                 const selector = ${selector};
                 if (selector) {
@@ -881,74 +896,81 @@ export class CdpBrowserDriver implements BrowserDriver {
                 return null;
             })()
         `;
-        await this.evaluate(targetId, code);
-        return null;
-    }
+    await this.evaluate(targetId, code);
+    return null;
+  }
 
-    private async pressKey(params: Record<string, unknown>): Promise<null> {
-        const targetId = await this.resolveTargetId(params);
-        const key = String(params.key ?? "");
-        const selector =
-            typeof params.selector === "string" ? params.selector : null;
+  private async pressKey(params: Record<string, unknown>): Promise<null> {
+    const targetId = await this.resolveTargetId(params);
+    const key = String(params.key ?? "");
+    const selector =
+      typeof params.selector === "string" ? params.selector : null;
 
-        if (selector) {
-            await this.evaluate(
-                targetId,
-                `(() => {
-                    const el = document.querySelector(${JSON.stringify(selector)});
+    if (selector) {
+      await this.evaluate(
+        targetId,
+        `(() => {
+                    const el = document.querySelector(${JSON.stringify(
+                      selector
+                    )});
                     if (el instanceof HTMLElement) el.focus();
-                })()`,
-            );
-        }
-
-        const session = await this.getSession(targetId);
-        const keyDef = resolveKey(key);
-
-        await this.sendCommand(
-            "Input.dispatchKeyEvent",
-            {
-                type: "keyDown",
-                key: keyDef.key,
-                code: keyDef.code,
-                text: keyDef.text,
-                windowsVirtualKeyCode: keyDef.keyCode,
-                nativeVirtualKeyCode: keyDef.keyCode,
-            },
-            session.sessionId,
-        );
-
-        await this.sendCommand(
-            "Input.dispatchKeyEvent",
-            {
-                type: "keyUp",
-                key: keyDef.key,
-                code: keyDef.code,
-                windowsVirtualKeyCode: keyDef.keyCode,
-                nativeVirtualKeyCode: keyDef.keyCode,
-            },
-            session.sessionId,
-        );
-
-        return null;
+                })()`
+      );
     }
 
-    private async selectOption(params: Record<string, unknown>): Promise<null> {
-        const targetId = await this.resolveTargetId(params);
-        const selector = String(params.selector ?? "");
-        const value =
-            typeof params.value === "string" ? params.value : null;
-        const label =
-            typeof params.label === "string" ? params.label : null;
-        const index =
-            typeof params.index === "number" ? params.index : null;
-        const code = `
+    const session = await this.getSession(targetId);
+    const keyDef = resolveKey(key);
+
+    await this.sendCommand(
+      "Input.dispatchKeyEvent",
+      {
+        type: "keyDown",
+        key: keyDef.key,
+        code: keyDef.code,
+        text: keyDef.text,
+        windowsVirtualKeyCode: keyDef.keyCode,
+        nativeVirtualKeyCode: keyDef.keyCode,
+      },
+      session.sessionId
+    );
+
+    await this.sendCommand(
+      "Input.dispatchKeyEvent",
+      {
+        type: "keyUp",
+        key: keyDef.key,
+        code: keyDef.code,
+        windowsVirtualKeyCode: keyDef.keyCode,
+        nativeVirtualKeyCode: keyDef.keyCode,
+      },
+      session.sessionId
+    );
+
+    return null;
+  }
+
+  private async selectOption(params: Record<string, unknown>): Promise<null> {
+    const targetId = await this.resolveTargetId(params);
+    const selector = String(params.selector ?? "");
+    const value = typeof params.value === "string" ? params.value : null;
+    const label = typeof params.label === "string" ? params.label : null;
+    const index = typeof params.index === "number" ? params.index : null;
+    const code = `
             (() => {
                 const el = document.querySelector(${JSON.stringify(selector)});
                 if (!(el instanceof HTMLSelectElement)) throw new Error("Select not found: ${selector}");
                 const options = [...el.options];
                 const target =
-                    ${JSON.stringify(value)} !== null ? options.find((opt) => opt.value === ${JSON.stringify(value)}) :
-                    ${JSON.stringify(label)} !== null ? options.find((opt) => opt.label === ${JSON.stringify(label)}) :
+                    ${JSON.stringify(
+                      value
+                    )} !== null ? options.find((opt) => opt.value === ${JSON.stringify(
+      value
+    )}) :
+                    ${JSON.stringify(
+                      label
+                    )} !== null ? options.find((opt) => opt.label === ${JSON.stringify(
+      label
+    )}) :
                     ${index === null ? "null" : `options[${index}]`};
                 if (!target) throw new Error("Requested option was not found");
                 el.value = target.value;
@@ -957,15 +979,15 @@ export class CdpBrowserDriver implements BrowserDriver {
                 return null;
             })()
         `;
-        await this.evaluate(targetId, code);
-        return null;
-    }
+    await this.evaluate(targetId, code);
+    return null;
+  }
 
-    private async checkElement(params: Record<string, unknown>): Promise<null> {
-        const targetId = await this.resolveTargetId(params);
-        const selector = String(params.selector ?? "");
-        const checked = params.checked !== false;
-        const code = `
+  private async checkElement(params: Record<string, unknown>): Promise<null> {
+    const targetId = await this.resolveTargetId(params);
+    const selector = String(params.selector ?? "");
+    const checked = params.checked !== false;
+    const code = `
             (() => {
                 const el = document.querySelector(${JSON.stringify(selector)});
                 if (!(el instanceof HTMLInputElement)) throw new Error("Checkbox/radio not found: ${selector}");
@@ -975,64 +997,58 @@ export class CdpBrowserDriver implements BrowserDriver {
                 return null;
             })()
         `;
-        await this.evaluate(targetId, code);
-        return null;
+    await this.evaluate(targetId, code);
+    return null;
+  }
+
+  private async clickAnnotation(
+    params: Record<string, unknown>
+  ): Promise<null> {
+    const targetId = await this.resolveTargetId(params);
+    const ref = Number(params.ref ?? 0);
+    const state = await this.getSession(targetId);
+    const selector = state.annotations.get(ref);
+    if (!selector) {
+      throw new Error(`Annotation @${ref} not found. Run annotate_page first.`);
     }
+    return this.click({ ...params, selector });
+  }
 
-    private async clickAnnotation(
-        params: Record<string, unknown>,
-    ): Promise<null> {
-        const targetId = await this.resolveTargetId(params);
-        const ref = Number(params.ref ?? 0);
-        const state = await this.getSession(targetId);
-        const selector = state.annotations.get(ref);
-        if (!selector) {
-            throw new Error(
-                `Annotation @${ref} not found. Run annotate_page first.`,
-            );
-        }
-        return this.click({ ...params, selector });
+  private async typeAnnotation(params: Record<string, unknown>): Promise<null> {
+    const targetId = await this.resolveTargetId(params);
+    const ref = Number(params.ref ?? 0);
+    const state = await this.getSession(targetId);
+    const selector = state.annotations.get(ref);
+    if (!selector) {
+      throw new Error(`Annotation @${ref} not found. Run annotate_page first.`);
     }
+    return this.typeText({ ...params, selector });
+  }
 
-    private async typeAnnotation(
-        params: Record<string, unknown>,
-    ): Promise<null> {
-        const targetId = await this.resolveTargetId(params);
-        const ref = Number(params.ref ?? 0);
-        const state = await this.getSession(targetId);
-        const selector = state.annotations.get(ref);
-        if (!selector) {
-            throw new Error(
-                `Annotation @${ref} not found. Run annotate_page first.`,
-            );
-        }
-        return this.typeText({ ...params, selector });
-    }
+  // -- Capture --
 
-    // -- Capture --
+  private async captureScreenshot(
+    params: Record<string, unknown>
+  ): Promise<string> {
+    const targetId = await this.resolveTargetId(params);
+    const session = await this.getSession(targetId);
+    const result = (await this.sendCommand(
+      "Page.captureScreenshot",
+      { format: "png" },
+      session.sessionId
+    )) as { data: string };
+    return `data:image/png;base64,${result.data}`;
+  }
 
-    private async captureScreenshot(
-        params: Record<string, unknown>,
-    ): Promise<string> {
-        const targetId = await this.resolveTargetId(params);
-        const session = await this.getSession(targetId);
-        const result = (await this.sendCommand(
-            "Page.captureScreenshot",
-            { format: "png" },
-            session.sessionId,
-        )) as { data: string };
-        return `data:image/png;base64,${result.data}`;
-    }
-
-    private async getComputedStyles(
-        params: Record<string, unknown>,
-    ): Promise<Record<string, string>> {
-        const targetId = await this.resolveTargetId(params);
-        const selector = String(params.selector ?? "");
-        const properties = Array.isArray(params.properties)
-            ? params.properties.map(String)
-            : null;
-        const code = `
+  private async getComputedStyles(
+    params: Record<string, unknown>
+  ): Promise<Record<string, string>> {
+    const targetId = await this.resolveTargetId(params);
+    const selector = String(params.selector ?? "");
+    const properties = Array.isArray(params.properties)
+      ? params.properties.map(String)
+      : null;
+    const code = `
             (() => {
                 const el = document.querySelector(${JSON.stringify(selector)});
                 if (!(el instanceof Element)) throw new Error("Element not found: ${selector}");
@@ -1041,18 +1057,15 @@ export class CdpBrowserDriver implements BrowserDriver {
                 return Object.fromEntries(keys.map((key) => [key, style.getPropertyValue(key)]));
             })()
         `;
-        return (await this.evaluate(targetId, code)) as Record<
-            string,
-            string
-        >;
-    }
+    return (await this.evaluate(targetId, code)) as Record<string, string>;
+  }
 
-    private async getElementRect(
-        params: Record<string, unknown>,
-    ): Promise<Record<string, number>> {
-        const targetId = await this.resolveTargetId(params);
-        const selector = String(params.selector ?? "");
-        const code = `
+  private async getElementRect(
+    params: Record<string, unknown>
+  ): Promise<Record<string, number>> {
+    const targetId = await this.resolveTargetId(params);
+    const selector = String(params.selector ?? "");
+    const code = `
             (() => {
                 const el = document.querySelector(${JSON.stringify(selector)});
                 if (!(el instanceof Element)) throw new Error("Element not found: ${selector}");
@@ -1067,17 +1080,14 @@ export class CdpBrowserDriver implements BrowserDriver {
                 };
             })()
         `;
-        return (await this.evaluate(targetId, code)) as Record<
-            string,
-            number
-        >;
-    }
+    return (await this.evaluate(targetId, code)) as Record<string, number>;
+  }
 
-    private async getPageMetrics(
-        params: Record<string, unknown>,
-    ): Promise<Record<string, unknown>> {
-        const targetId = await this.resolveTargetId(params);
-        const code = `
+  private async getPageMetrics(
+    params: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    const targetId = await this.resolveTargetId(params);
+    const code = `
             (() => {
                 const nav = performance.getEntriesByType("navigation")[0];
                 return {
@@ -1094,20 +1104,17 @@ export class CdpBrowserDriver implements BrowserDriver {
                 };
             })()
         `;
-        return (await this.evaluate(targetId, code)) as Record<
-            string,
-            unknown
-        >;
-    }
+    return (await this.evaluate(targetId, code)) as Record<string, unknown>;
+  }
 
-    private async annotatePage(
-        params: Record<string, unknown>,
-    ): Promise<{ count: number }> {
-        const targetId = await this.resolveTargetId(params);
-        const state = await this.getSession(targetId);
-        state.annotations.clear();
+  private async annotatePage(
+    params: Record<string, unknown>
+  ): Promise<{ count: number }> {
+    const targetId = await this.resolveTargetId(params);
+    const state = await this.getSession(targetId);
+    state.annotations.clear();
 
-        const code = `
+    const code = `
             (() => {
                 const INTERACTIVE = "a, button, input, select, textarea, [role='button'], [role='link'], [role='tab'], [tabindex], [contenteditable='true']";
                 const elements = [...document.querySelectorAll(INTERACTIVE)]
@@ -1182,41 +1189,39 @@ export class CdpBrowserDriver implements BrowserDriver {
             })()
         `;
 
-        const annotations = (await this.evaluate(targetId, code)) as Array<{
-            ref: number;
-            selector: string;
-        }>;
+    const annotations = (await this.evaluate(targetId, code)) as Array<{
+      ref: number;
+      selector: string;
+    }>;
 
-        for (const { ref, selector } of annotations) {
-            state.annotations.set(ref, selector);
-        }
-
-        return { count: annotations.length };
+    for (const { ref, selector } of annotations) {
+      state.annotations.set(ref, selector);
     }
 
-    private async clearAnnotations(
-        params: Record<string, unknown>,
-    ): Promise<null> {
-        const targetId = await this.resolveTargetId(params);
-        const state = await this.getSession(targetId);
-        state.annotations.clear();
-        await this.evaluate(
-            targetId,
-            `document.querySelectorAll(".__ai_annotation__").forEach((el) => el.remove()); null;`,
-        );
-        return null;
-    }
+    return { count: annotations.length };
+  }
 
-    private async highlightElement(
-        params: Record<string, unknown>,
-    ): Promise<null> {
-        const targetId = await this.resolveTargetId(params);
-        const selector = String(params.selector ?? "");
-        const color = String(
-            params.color ?? "rgba(229, 62, 62, 0.3)",
-        );
-        const duration = Number(params.duration ?? 3000);
-        const code = `
+  private async clearAnnotations(
+    params: Record<string, unknown>
+  ): Promise<null> {
+    const targetId = await this.resolveTargetId(params);
+    const state = await this.getSession(targetId);
+    state.annotations.clear();
+    await this.evaluate(
+      targetId,
+      `document.querySelectorAll(".__ai_annotation__").forEach((el) => el.remove()); null;`
+    );
+    return null;
+  }
+
+  private async highlightElement(
+    params: Record<string, unknown>
+  ): Promise<null> {
+    const targetId = await this.resolveTargetId(params);
+    const selector = String(params.selector ?? "");
+    const color = String(params.color ?? "rgba(229, 62, 62, 0.3)");
+    const duration = Number(params.duration ?? 3000);
+    const code = `
             (() => {
                 const el = document.querySelector(${JSON.stringify(selector)});
                 if (!(el instanceof Element)) throw new Error("Element not found: ${selector}");
@@ -1243,366 +1248,355 @@ export class CdpBrowserDriver implements BrowserDriver {
                 return null;
             })()
         `;
-        await this.evaluate(targetId, code);
-        return null;
-    }
+    await this.evaluate(targetId, code);
+    return null;
+  }
 
-    // -- Wait --
+  // -- Wait --
 
-    private async waitForSelector(
-        params: Record<string, unknown>,
-    ): Promise<null> {
-        const targetId = await this.resolveTargetId(params);
-        const selector = String(params.selector ?? "");
-        const visible = params.visible === true;
-        const timeout = Number(params.timeout ?? 10_000);
-        const deadline = Date.now() + timeout;
+  private async waitForSelector(
+    params: Record<string, unknown>
+  ): Promise<null> {
+    const targetId = await this.resolveTargetId(params);
+    const selector = String(params.selector ?? "");
+    const visible = params.visible === true;
+    const timeout = Number(params.timeout ?? 10_000);
+    const deadline = Date.now() + timeout;
 
-        while (Date.now() < deadline) {
-            try {
-                const found = await this.evaluate(
-                    targetId,
-                    `
+    while (Date.now() < deadline) {
+      try {
+        const found = await this.evaluate(
+          targetId,
+          `
                     (() => {
-                        const el = document.querySelector(${JSON.stringify(selector)});
+                        const el = document.querySelector(${JSON.stringify(
+                          selector
+                        )});
                         if (!el) return false;
                         if (!${JSON.stringify(visible)}) return true;
                         const rect = el.getBoundingClientRect();
                         const style = getComputedStyle(el);
                         return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
                     })()
-                    `,
-                );
-                if (found === true) {
-                    return null;
-                }
-            } catch {
-                // keep polling while the page is navigating
-            }
-            await sleep(200);
-        }
-
-        throw new Error(`Timed out waiting for selector: ${selector}`);
-    }
-
-    private async waitForNavigation(
-        params: Record<string, unknown>,
-    ): Promise<null> {
-        const targetId = await this.resolveTargetId(params);
-        await this.waitForReadyState(
-            targetId,
-            Number(params.timeout ?? 30_000),
+                    `
         );
-        return null;
-    }
-
-    private async waitForNetworkIdle(
-        params: Record<string, unknown>,
-    ): Promise<null> {
-        const targetId = await this.resolveTargetId(params);
-        const timeout = Number(params.timeout ?? 10_000);
-        const idleTime = Number(params.idleTime ?? 500);
-        const state = await this.getSession(targetId);
-        const deadline = Date.now() + timeout;
-
-        let idleSince: number | null = null;
-
-        while (Date.now() < deadline) {
-            if (state.networkPending <= 0) {
-                if (idleSince === null) {
-                    idleSince = Date.now();
-                } else if (Date.now() - idleSince >= idleTime) {
-                    return null;
-                }
-            } else {
-                idleSince = null;
-            }
-            await sleep(100);
+        if (found === true) {
+          return null;
         }
-
-        throw new Error(
-            `Timed out waiting for network idle (${state.networkPending} pending requests)`,
-        );
+      } catch {
+        // keep polling while the page is navigating
+      }
+      await sleep(200);
     }
 
-    // -- Cookies --
+    throw new Error(`Timed out waiting for selector: ${selector}`);
+  }
 
-    private async getCookies(url: string): Promise<unknown> {
-        const result = (await this.sendCommand("Network.getCookies", {
-            urls: [url],
-        })) as { cookies?: unknown };
-        return result.cookies ?? [];
-    }
+  private async waitForNavigation(
+    params: Record<string, unknown>
+  ): Promise<null> {
+    const targetId = await this.resolveTargetId(params);
+    await this.waitForReadyState(targetId, Number(params.timeout ?? 30_000));
+    return null;
+  }
 
-    private async setCookie(params: Record<string, unknown>): Promise<null> {
-        const result = (await this.sendCommand("Network.setCookie", {
-            url: params.url,
-            name: params.name,
-            value: params.value,
-            domain: params.domain,
-            path: params.path,
-            secure: params.secure,
-            httpOnly: params.httpOnly,
-            expires: params.expirationDate,
-        })) as { success?: boolean };
-        if (!result.success) {
-            throw new Error("CDP rejected the cookie");
+  private async waitForNetworkIdle(
+    params: Record<string, unknown>
+  ): Promise<null> {
+    const targetId = await this.resolveTargetId(params);
+    const timeout = Number(params.timeout ?? 10_000);
+    const idleTime = Number(params.idleTime ?? 500);
+    const state = await this.getSession(targetId);
+    const deadline = Date.now() + timeout;
+
+    let idleSince: number | null = null;
+
+    while (Date.now() < deadline) {
+      if (state.networkPending <= 0) {
+        if (idleSince === null) {
+          idleSince = Date.now();
+        } else if (Date.now() - idleSince >= idleTime) {
+          return null;
         }
-        return null;
+      } else {
+        idleSince = null;
+      }
+      await sleep(100);
     }
 
-    private async deleteCookie(
-        params: Record<string, unknown>,
-    ): Promise<null> {
-        await this.sendCommand("Network.deleteCookies", {
-            url: params.url,
-            name: params.name,
-        });
-        return null;
+    throw new Error(
+      `Timed out waiting for network idle (${state.networkPending} pending requests)`
+    );
+  }
+
+  // -- Cookies --
+
+  private async getCookies(url: string): Promise<unknown> {
+    const result = (await this.sendCommand("Network.getCookies", {
+      urls: [url],
+    })) as { cookies?: unknown };
+    return result.cookies ?? [];
+  }
+
+  private async setCookie(params: Record<string, unknown>): Promise<null> {
+    const result = (await this.sendCommand("Network.setCookie", {
+      url: params.url,
+      name: params.name,
+      value: params.value,
+      domain: params.domain,
+      path: params.path,
+      secure: params.secure,
+      httpOnly: params.httpOnly,
+      expires: params.expirationDate,
+    })) as { success?: boolean };
+    if (!result.success) {
+      throw new Error("CDP rejected the cookie");
     }
+    return null;
+  }
 
-    // -- Storage --
+  private async deleteCookie(params: Record<string, unknown>): Promise<null> {
+    await this.sendCommand("Network.deleteCookies", {
+      url: params.url,
+      name: params.name,
+    });
+    return null;
+  }
 
-    private async getStorage(
-        params: Record<string, unknown>,
-    ): Promise<Record<string, string> | string | null> {
-        const targetId = await this.resolveTargetId(params);
-        const storageType =
-            params.type === "session" ? "sessionStorage" : "localStorage";
-        const key = typeof params.key === "string" ? params.key : null;
-        const code = key
-            ? `${storageType}.getItem(${JSON.stringify(key)})`
-            : `Object.fromEntries(Object.keys(${storageType}).map((key) => [key, ${storageType}.getItem(key) ?? ""]))`;
-        return (await this.evaluate(targetId, code)) as
-            | Record<string, string>
-            | string
-            | null;
+  // -- Storage --
+
+  private async getStorage(
+    params: Record<string, unknown>
+  ): Promise<Record<string, string> | string | null> {
+    const targetId = await this.resolveTargetId(params);
+    const storageType =
+      params.type === "session" ? "sessionStorage" : "localStorage";
+    const key = typeof params.key === "string" ? params.key : null;
+    const code = key
+      ? `${storageType}.getItem(${JSON.stringify(key)})`
+      : `Object.fromEntries(Object.keys(${storageType}).map((key) => [key, ${storageType}.getItem(key) ?? ""]))`;
+    return (await this.evaluate(targetId, code)) as
+      | Record<string, string>
+      | string
+      | null;
+  }
+
+  private async setStorage(params: Record<string, unknown>): Promise<null> {
+    const targetId = await this.resolveTargetId(params);
+    const storageType =
+      params.type === "session" ? "sessionStorage" : "localStorage";
+    await this.evaluate(
+      targetId,
+      `${storageType}.setItem(${JSON.stringify(
+        String(params.key ?? "")
+      )}, ${JSON.stringify(String(params.value ?? ""))}); null;`
+    );
+    return null;
+  }
+
+  private async clearStorage(params: Record<string, unknown>): Promise<null> {
+    const targetId = await this.resolveTargetId(params);
+    const storageType =
+      params.type === "session" ? "sessionStorage" : "localStorage";
+    await this.evaluate(targetId, `${storageType}.clear(); null;`);
+    return null;
+  }
+
+  // -- Dialog --
+
+  private async setDialogBehavior(
+    params: Record<string, unknown>
+  ): Promise<null> {
+    const targetId = await this.resolveTargetId(params);
+    const state = await this.getSession(targetId);
+    state.dialogBehavior = {
+      action: params.action === "dismiss" ? "dismiss" : "accept",
+      text: typeof params.text === "string" ? params.text : undefined,
+    };
+    return null;
+  }
+
+  private async getLastDialog(
+    params: Record<string, unknown>
+  ): Promise<DialogInfo | null> {
+    const targetId = await this.resolveTargetId(params);
+    const state = await this.getSession(targetId);
+    return state.lastDialog;
+  }
+
+  // -- Monitor --
+
+  private async getConsoleLogs(
+    params: Record<string, unknown>
+  ): Promise<ConsoleEntry[]> {
+    const targetId = await this.resolveTargetId(params);
+    const state = await this.getSession(targetId);
+    const level = String(params.level ?? "all");
+    const limit = Number(params.limit ?? 100);
+    let logs = state.consoleLogs;
+    if (level !== "all") {
+      logs = logs.filter((entry) => entry.level === level);
     }
+    return logs.slice(-limit);
+  }
 
-    private async setStorage(params: Record<string, unknown>): Promise<null> {
-        const targetId = await this.resolveTargetId(params);
-        const storageType =
-            params.type === "session" ? "sessionStorage" : "localStorage";
-        await this.evaluate(
-            targetId,
-            `${storageType}.setItem(${JSON.stringify(String(params.key ?? ""))}, ${JSON.stringify(String(params.value ?? ""))}); null;`,
-        );
-        return null;
+  private async getPageErrors(
+    params: Record<string, unknown>
+  ): Promise<ErrorEntry[]> {
+    const targetId = await this.resolveTargetId(params);
+    const state = await this.getSession(targetId);
+    const limit = Number(params.limit ?? 50);
+    return state.pageErrors.slice(-limit);
+  }
+
+  // -- Evaluate (uses persistent session) --
+
+  private async evaluate(
+    targetId: string,
+    expression: string
+  ): Promise<unknown> {
+    const session = await this.getSession(targetId);
+    const result = (await this.sendCommand(
+      "Runtime.evaluate",
+      {
+        expression,
+        awaitPromise: true,
+        returnByValue: true,
+      },
+      session.sessionId
+    )) as {
+      result?: { value?: unknown; description?: string };
+      exceptionDetails?: {
+        text?: string;
+        exception?: { description?: string };
+      };
+    };
+    if (result.exceptionDetails) {
+      const message =
+        result.exceptionDetails.exception?.description ??
+        result.exceptionDetails.text ??
+        "Evaluation failed";
+      throw new Error(message);
     }
+    return result.result?.value;
+  }
 
-    private async clearStorage(
-        params: Record<string, unknown>,
-    ): Promise<null> {
-        const targetId = await this.resolveTargetId(params);
-        const storageType =
-            params.type === "session" ? "sessionStorage" : "localStorage";
-        await this.evaluate(targetId, `${storageType}.clear(); null;`);
-        return null;
-    }
-
-    // -- Dialog --
-
-    private async setDialogBehavior(
-        params: Record<string, unknown>,
-    ): Promise<null> {
-        const targetId = await this.resolveTargetId(params);
-        const state = await this.getSession(targetId);
-        state.dialogBehavior = {
-            action: params.action === "dismiss" ? "dismiss" : "accept",
-            text:
-                typeof params.text === "string" ? params.text : undefined,
-        };
-        return null;
-    }
-
-    private async getLastDialog(
-        params: Record<string, unknown>,
-    ): Promise<DialogInfo | null> {
-        const targetId = await this.resolveTargetId(params);
-        const state = await this.getSession(targetId);
-        return state.lastDialog;
-    }
-
-    // -- Monitor --
-
-    private async getConsoleLogs(
-        params: Record<string, unknown>,
-    ): Promise<ConsoleEntry[]> {
-        const targetId = await this.resolveTargetId(params);
-        const state = await this.getSession(targetId);
-        const level = String(params.level ?? "all");
-        const limit = Number(params.limit ?? 100);
-        let logs = state.consoleLogs;
-        if (level !== "all") {
-            logs = logs.filter((entry) => entry.level === level);
+  private async waitForReadyState(
+    targetId: string,
+    timeout: number
+  ): Promise<void> {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      try {
+        const readyState = await this.evaluate(targetId, "document.readyState");
+        if (readyState === "interactive" || readyState === "complete") {
+          return;
         }
-        return logs.slice(-limit);
+      } catch {
+        // keep polling during navigation
+      }
+      await sleep(200);
     }
+    throw new Error("Timed out waiting for navigation");
+  }
 
-    private async getPageErrors(
-        params: Record<string, unknown>,
-    ): Promise<ErrorEntry[]> {
-        const targetId = await this.resolveTargetId(params);
-        const state = await this.getSession(targetId);
-        const limit = Number(params.limit ?? 50);
-        return state.pageErrors.slice(-limit);
+  // -- Target resolution --
+
+  private requireTabId(params: Record<string, unknown>): number {
+    if (typeof params.tabId !== "number" || !Number.isInteger(params.tabId)) {
+      throw new Error("tabId is required");
     }
+    return params.tabId;
+  }
 
-    // -- Evaluate (uses persistent session) --
+  private async requireTargetId(
+    params: Record<string, unknown>
+  ): Promise<string> {
+    return this.targetIdFromTabId(this.requireTabId(params));
+  }
 
-    private async evaluate(
-        targetId: string,
-        expression: string,
-    ): Promise<unknown> {
-        const session = await this.getSession(targetId);
-        const result = (await this.sendCommand(
-            "Runtime.evaluate",
-            {
-                expression,
-                awaitPromise: true,
-                returnByValue: true,
-            },
-            session.sessionId,
-        )) as {
-            result?: { value?: unknown; description?: string };
-            exceptionDetails?: {
-                text?: string;
-                exception?: { description?: string };
-            };
-        };
-        if (result.exceptionDetails) {
-            const message =
-                result.exceptionDetails.exception?.description ??
-                result.exceptionDetails.text ??
-                "Evaluation failed";
-            throw new Error(message);
-        }
-        return result.result?.value;
+  private async resolveTargetId(
+    params: Record<string, unknown>
+  ): Promise<string> {
+    if (typeof params.tabId === "number" && Number.isInteger(params.tabId)) {
+      return this.targetIdFromTabId(params.tabId);
     }
-
-    private async waitForReadyState(
-        targetId: string,
-        timeout: number,
-    ): Promise<void> {
-        const deadline = Date.now() + timeout;
-        while (Date.now() < deadline) {
-            try {
-                const readyState = await this.evaluate(
-                    targetId,
-                    "document.readyState",
-                );
-                if (
-                    readyState === "interactive" ||
-                    readyState === "complete"
-                ) {
-                    return;
-                }
-            } catch {
-                // keep polling during navigation
-            }
-            await sleep(200);
-        }
-        throw new Error("Timed out waiting for navigation");
+    if (this.activeTargetId) {
+      return this.activeTargetId;
     }
-
-    // -- Target resolution --
-
-    private requireTabId(params: Record<string, unknown>): number {
-        if (
-            typeof params.tabId !== "number" ||
-            !Number.isInteger(params.tabId)
-        ) {
-            throw new Error("tabId is required");
-        }
-        return params.tabId;
+    const tabs = await this.listTabs();
+    const first = tabs[0];
+    if (!first || typeof first.targetId !== "string") {
+      throw new Error("No browser tabs are open");
     }
+    this.activeTargetId = first.targetId;
+    return first.targetId;
+  }
 
-    private async requireTargetId(
-        params: Record<string, unknown>,
-    ): Promise<string> {
-        return this.targetIdFromTabId(this.requireTabId(params));
+  private async targetIdFromTabId(tabId: number): Promise<string> {
+    const tabs = await this.listTabs();
+    const tab = tabs.find((entry) => entry.tabId === tabId);
+    if (!tab || typeof tab.targetId !== "string") {
+      throw new Error(`Tab not found: ${tabId}`);
     }
-
-    private async resolveTargetId(
-        params: Record<string, unknown>,
-    ): Promise<string> {
-        if (
-            typeof params.tabId === "number" &&
-            Number.isInteger(params.tabId)
-        ) {
-            return this.targetIdFromTabId(params.tabId);
-        }
-        if (this.activeTargetId) {
-            return this.activeTargetId;
-        }
-        const tabs = await this.listTabs();
-        const first = tabs[0];
-        if (!first || typeof first.targetId !== "string") {
-            throw new Error("No browser tabs are open");
-        }
-        this.activeTargetId = first.targetId;
-        return first.targetId;
-    }
-
-    private async targetIdFromTabId(tabId: number): Promise<string> {
-        const tabs = await this.listTabs();
-        const tab = tabs.find((entry) => entry.tabId === tabId);
-        if (!tab || typeof tab.targetId !== "string") {
-            throw new Error(`Tab not found: ${tabId}`);
-        }
-        return tab.targetId;
-    }
+    return tab.targetId;
+  }
 }
 
 // -- Key mapping --
 
 interface KeyDef {
-    key: string;
-    code: string;
-    keyCode: number;
-    text: string;
+  key: string;
+  code: string;
+  keyCode: number;
+  text: string;
 }
 
 function resolveKey(input: string): KeyDef {
-    const special: Record<string, KeyDef> = {
-        Enter: { key: "Enter", code: "Enter", keyCode: 13, text: "\r" },
-        Tab: { key: "Tab", code: "Tab", keyCode: 9, text: "" },
-        Escape: { key: "Escape", code: "Escape", keyCode: 27, text: "" },
-        Backspace: { key: "Backspace", code: "Backspace", keyCode: 8, text: "" },
-        Delete: { key: "Delete", code: "Delete", keyCode: 46, text: "" },
-        ArrowUp: { key: "ArrowUp", code: "ArrowUp", keyCode: 38, text: "" },
-        ArrowDown: { key: "ArrowDown", code: "ArrowDown", keyCode: 40, text: "" },
-        ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", keyCode: 37, text: "" },
-        ArrowRight: { key: "ArrowRight", code: "ArrowRight", keyCode: 39, text: "" },
-        Home: { key: "Home", code: "Home", keyCode: 36, text: "" },
-        End: { key: "End", code: "End", keyCode: 35, text: "" },
-        PageUp: { key: "PageUp", code: "PageUp", keyCode: 33, text: "" },
-        PageDown: { key: "PageDown", code: "PageDown", keyCode: 34, text: "" },
-        Space: { key: " ", code: "Space", keyCode: 32, text: " " },
-        F1: { key: "F1", code: "F1", keyCode: 112, text: "" },
-        F2: { key: "F2", code: "F2", keyCode: 113, text: "" },
-        F3: { key: "F3", code: "F3", keyCode: 114, text: "" },
-        F4: { key: "F4", code: "F4", keyCode: 115, text: "" },
-        F5: { key: "F5", code: "F5", keyCode: 116, text: "" },
-        F6: { key: "F6", code: "F6", keyCode: 117, text: "" },
-        F7: { key: "F7", code: "F7", keyCode: 118, text: "" },
-        F8: { key: "F8", code: "F8", keyCode: 119, text: "" },
-        F9: { key: "F9", code: "F9", keyCode: 120, text: "" },
-        F10: { key: "F10", code: "F10", keyCode: 121, text: "" },
-        F11: { key: "F11", code: "F11", keyCode: 122, text: "" },
-        F12: { key: "F12", code: "F12", keyCode: 123, text: "" },
-    };
+  const special: Record<string, KeyDef> = {
+    Enter: { key: "Enter", code: "Enter", keyCode: 13, text: "\r" },
+    Tab: { key: "Tab", code: "Tab", keyCode: 9, text: "" },
+    Escape: { key: "Escape", code: "Escape", keyCode: 27, text: "" },
+    Backspace: { key: "Backspace", code: "Backspace", keyCode: 8, text: "" },
+    Delete: { key: "Delete", code: "Delete", keyCode: 46, text: "" },
+    ArrowUp: { key: "ArrowUp", code: "ArrowUp", keyCode: 38, text: "" },
+    ArrowDown: { key: "ArrowDown", code: "ArrowDown", keyCode: 40, text: "" },
+    ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", keyCode: 37, text: "" },
+    ArrowRight: {
+      key: "ArrowRight",
+      code: "ArrowRight",
+      keyCode: 39,
+      text: "",
+    },
+    Home: { key: "Home", code: "Home", keyCode: 36, text: "" },
+    End: { key: "End", code: "End", keyCode: 35, text: "" },
+    PageUp: { key: "PageUp", code: "PageUp", keyCode: 33, text: "" },
+    PageDown: { key: "PageDown", code: "PageDown", keyCode: 34, text: "" },
+    Space: { key: " ", code: "Space", keyCode: 32, text: " " },
+    F1: { key: "F1", code: "F1", keyCode: 112, text: "" },
+    F2: { key: "F2", code: "F2", keyCode: 113, text: "" },
+    F3: { key: "F3", code: "F3", keyCode: 114, text: "" },
+    F4: { key: "F4", code: "F4", keyCode: 115, text: "" },
+    F5: { key: "F5", code: "F5", keyCode: 116, text: "" },
+    F6: { key: "F6", code: "F6", keyCode: 117, text: "" },
+    F7: { key: "F7", code: "F7", keyCode: 118, text: "" },
+    F8: { key: "F8", code: "F8", keyCode: 119, text: "" },
+    F9: { key: "F9", code: "F9", keyCode: 120, text: "" },
+    F10: { key: "F10", code: "F10", keyCode: 121, text: "" },
+    F11: { key: "F11", code: "F11", keyCode: 122, text: "" },
+    F12: { key: "F12", code: "F12", keyCode: 123, text: "" },
+  };
 
-    if (special[input]) {
-        return special[input];
-    }
+  if (special[input]) {
+    return special[input];
+  }
 
-    // Single character
-    const char = input.length === 1 ? input : input.toLowerCase();
-    return {
-        key: char,
-        code: `Key${char.toUpperCase()}`,
-        keyCode: char.toUpperCase().charCodeAt(0),
-        text: char,
-    };
+  // Single character
+  const char = input.length === 1 ? input : input.toLowerCase();
+  return {
+    key: char,
+    code: `Key${char.toUpperCase()}`,
+    keyCode: char.toUpperCase().charCodeAt(0),
+    text: char,
+  };
 }

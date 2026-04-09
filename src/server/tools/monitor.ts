@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { send } from "../bridge.js";
+import { createBridgeJsonResult } from "./toolResult.js";
 
 export function registerMonitorTools(server: McpServer): void {
   server.tool(
@@ -23,16 +24,8 @@ export function registerMonitorTools(server: McpServer): void {
         level,
         limit,
       });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success ? JSON.stringify(res.data, null, 2) : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeJsonResult(res.success, res.data, res.error);
+    }
   );
 
   server.tool(
@@ -47,16 +40,8 @@ export function registerMonitorTools(server: McpServer): void {
     },
     async ({ tabId, limit }) => {
       const res = await send("monitor.pageErrors", { tabId, limit });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success ? JSON.stringify(res.data, null, 2) : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeJsonResult(res.success, res.data, res.error);
+    }
   );
 
   server.tool(
@@ -67,15 +52,7 @@ export function registerMonitorTools(server: McpServer): void {
     },
     async ({ tabId }) => {
       const res = await send("capture.metrics", { tabId });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success ? JSON.stringify(res.data, null, 2) : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeJsonResult(res.success, res.data, res.error);
+    }
   );
 }

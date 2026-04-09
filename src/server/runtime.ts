@@ -44,6 +44,6 @@ export function createRuntime(): BrowserDriver {
   }
 
   throw new Error(
-    `Unsupported BROWSER_RUNTIME=${runtime}. Supported values: playwright, http-fetch, chromium-cdp, external-cdp`,
+    `Unsupported BROWSER_RUNTIME=${runtime}. Supported values: playwright, http-fetch, chromium-cdp, external-cdp`
   );
 }

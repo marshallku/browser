@@ -1,6 +1,10 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { send } from "../bridge.js";
+import {
+  createBridgeJsonResult,
+  createBridgeTextResult,
+} from "./toolResult.js";
 
 export function registerCookieTools(server: McpServer): void {
   server.tool(
@@ -11,16 +15,8 @@ export function registerCookieTools(server: McpServer): void {
     },
     async ({ url }) => {
       const res = await send("cookies.get", { url });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success ? JSON.stringify(res.data, null, 2) : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeJsonResult(res.success, res.data, res.error);
+    }
   );
 
   server.tool(
@@ -59,16 +55,8 @@ export function registerCookieTools(server: McpServer): void {
         httpOnly,
         expirationDate,
       });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success ? "Cookie set" : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(res.success, "Cookie set", res.error);
+    }
   );
 
   server.tool(
@@ -80,15 +68,7 @@ export function registerCookieTools(server: McpServer): void {
     },
     async ({ url, name }) => {
       const res = await send("cookies.delete", { url, name });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success ? "Cookie deleted" : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(res.success, "Cookie deleted", res.error);
+    }
   );
 }

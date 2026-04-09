@@ -2,6 +2,12 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { send } from "../bridge.js";
 import { PNG } from "pngjs";
+import {
+  createBridgeJsonResult,
+  createBridgeTextResult,
+  createImageResult,
+  createTextResult,
+} from "./toolResult.js";
 
 export function registerCaptureTools(server: McpServer): void {
   server.tool(
@@ -13,14 +19,10 @@ export function registerCaptureTools(server: McpServer): void {
     async ({ tabId }) => {
       const res = await send("capture.screenshot", { tabId });
       if (!res.success) {
-        return { content: [{ type: "text", text: res.error! }], isError: true };
+        return createTextResult({ text: res.error!, isError: true });
       }
-      const dataUrl = String(res.data);
-      const base64 = dataUrl.replace(/^data:image\/png;base64,/, "");
-      return {
-        content: [{ type: "image", data: base64, mimeType: "image/png" }],
-      };
-    },
+      return createImageResult({ dataUrl: String(res.data) });
+    }
   );
 
   server.tool(
@@ -40,16 +42,8 @@ export function registerCaptureTools(server: McpServer): void {
         selector,
         properties,
       });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success ? JSON.stringify(res.data, null, 2) : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeJsonResult(res.success, res.data, res.error);
+    }
   );
 
   server.tool(
@@ -61,10 +55,7 @@ export function registerCaptureTools(server: McpServer): void {
     async ({ tabId }) => {
       const annotateRes = await send("capture.annotate", { tabId });
       if (!annotateRes.success) {
-        return {
-          content: [{ type: "text", text: annotateRes.error! }],
-          isError: true,
-        };
+        return createTextResult({ text: annotateRes.error!, isError: true });
       }
 
       const screenshotRes = await send("capture.screenshot", { tabId });
@@ -72,29 +63,26 @@ export function registerCaptureTools(server: McpServer): void {
       await send("capture.clearAnnotations", { tabId });
 
       if (!screenshotRes.success) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Annotated ${(annotateRes.data as { count: number }).count} elements but screenshot failed: ${screenshotRes.error}`,
-            },
-          ],
+        return createTextResult({
+          text: `Annotated ${
+            (annotateRes.data as { count: number }).count
+          } elements but screenshot failed: ${screenshotRes.error}`,
           isError: true,
-        };
+        });
       }
 
-      const dataUrl = String(screenshotRes.data);
-      const base64 = dataUrl.replace(/^data:image\/png;base64,/, "");
       return {
         content: [
           {
             type: "text",
-            text: `Annotated ${(annotateRes.data as { count: number }).count} interactive elements. Use click_annotation(ref) or type_annotation(ref, text) to interact.`,
+            text: `Annotated ${
+              (annotateRes.data as { count: number }).count
+            } interactive elements. Use click_annotation(ref) or type_annotation(ref, text) to interact.`,
           },
-          { type: "image", data: base64, mimeType: "image/png" },
+          ...createImageResult({ dataUrl: String(screenshotRes.data) }).content,
         ],
       };
-    },
+    }
   );
 
   server.tool(
@@ -119,16 +107,12 @@ export function registerCaptureTools(server: McpServer): void {
         color,
         duration,
       });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success ? "Element highlighted" : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(
+        res.success,
+        "Element highlighted",
+        res.error
+      );
+    }
   );
 
   server.tool(
@@ -144,18 +128,12 @@ export function registerCaptureTools(server: McpServer): void {
         selector,
       });
       if (!rectRes.success) {
-        return {
-          content: [{ type: "text", text: rectRes.error! }],
-          isError: true,
-        };
+        return createTextResult({ text: rectRes.error!, isError: true });
       }
 
       const screenshotRes = await send("capture.screenshot", { tabId });
       if (!screenshotRes.success) {
-        return {
-          content: [{ type: "text", text: screenshotRes.error! }],
-          isError: true,
-        };
+        return createTextResult({ text: screenshotRes.error!, isError: true });
       }
 
       const rect = rectRes.data as {
@@ -179,11 +157,9 @@ export function registerCaptureTools(server: McpServer): void {
         const ch = Math.min(Math.round(rect.height * dpr), src.height - cy);
 
         if (cw <= 0 || ch <= 0) {
-          return {
-            content: [
-              { type: "image", data: base64Data, mimeType: "image/png" },
-            ],
-          };
+          return createImageResult({
+            dataUrl: `data:image/png;base64,${base64Data}`,
+          });
         }
 
         const dst = new PNG({ width: cw, height: ch });
@@ -191,17 +167,15 @@ export function registerCaptureTools(server: McpServer): void {
         const croppedBuffer = PNG.sync.write(dst);
         const croppedBase64 = croppedBuffer.toString("base64");
 
-        return {
-          content: [
-            { type: "image", data: croppedBase64, mimeType: "image/png" },
-          ],
-        };
+        return createImageResult({
+          dataUrl: `data:image/png;base64,${croppedBase64}`,
+        });
       } catch {
-        return {
-          content: [{ type: "image", data: base64Data, mimeType: "image/png" }],
-        };
+        return createImageResult({
+          dataUrl: `data:image/png;base64,${base64Data}`,
+        });
       }
-    },
+    }
   );
 
   server.tool(
@@ -214,7 +188,7 @@ export function registerCaptureTools(server: McpServer): void {
         .number()
         .optional()
         .describe(
-          "Color distance threshold for pixel comparison (0-255, default: 30)",
+          "Color distance threshold for pixel comparison (0-255, default: 30)"
         ),
     },
     async ({ image1, image2, threshold }) => {
@@ -259,7 +233,7 @@ export function registerCaptureTools(server: McpServer): void {
             const gray = Math.round(
               0.299 * img1.data[i] +
                 0.587 * img1.data[i + 1] +
-                0.114 * img1.data[i + 2],
+                0.114 * img1.data[i + 2]
             );
             diff.data[i] = gray;
             diff.data[i + 1] = gray;
@@ -269,7 +243,7 @@ export function registerCaptureTools(server: McpServer): void {
         }
 
         const diffPercent = parseFloat(
-          ((mismatchCount / totalPixels) * 100).toFixed(2),
+          ((mismatchCount / totalPixels) * 100).toFixed(2)
         );
         const diffBase64 = PNG.sync.write(diff).toString("base64");
 
@@ -298,6 +272,6 @@ export function registerCaptureTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }
   );
 }

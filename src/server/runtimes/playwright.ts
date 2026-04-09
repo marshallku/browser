@@ -80,7 +80,7 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
 
   async execute(
     action: BridgeAction,
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ): Promise<BridgeResponse> {
     const id = crypto.randomUUID();
     try {
@@ -97,7 +97,7 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
 
   private async dispatch(
     action: BridgeAction,
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ): Promise<unknown> {
     switch (action) {
       case "tabs.list":
@@ -203,7 +203,7 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
         return webkit;
       default:
         throw new Error(
-          `Unsupported BROWSER_NAME=${this.options.browserName}. Use chromium, firefox, or webkit.`,
+          `Unsupported BROWSER_NAME=${this.options.browserName}. Use chromium, firefox, or webkit.`
         );
     }
   }
@@ -217,13 +217,13 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
       this.options.browserName === "firefox"
         ? ["/usr/bin/firefox"]
         : this.options.browserName === "webkit"
-          ? []
-          : [
-              "/usr/bin/chromium",
-              "/usr/bin/chromium-browser",
-              "/usr/bin/google-chrome",
-              "/usr/bin/google-chrome-stable",
-            ];
+        ? []
+        : [
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+          ];
 
     return candidates.find((candidate) => existsSync(candidate));
   }
@@ -321,7 +321,7 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
 
   private async navigate(
     page: Page,
-    url: string,
+    url: string
   ): Promise<Record<string, unknown>> {
     await this.goto(page, url);
     return {
@@ -348,7 +348,8 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
 
   private async getHtml(params: Record<string, unknown>): Promise<string> {
     const page = this.getPage(params);
-    const selector = typeof params.selector === "string" ? params.selector : null;
+    const selector =
+      typeof params.selector === "string" ? params.selector : null;
     const outer = params.outer !== false;
     const clean = params.clean !== false;
     if (!selector) {
@@ -364,7 +365,8 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
 
   private async getText(params: Record<string, unknown>): Promise<string> {
     const page = this.getPage(params);
-    const selector = typeof params.selector === "string" ? params.selector : null;
+    const selector =
+      typeof params.selector === "string" ? params.selector : null;
     const raw = params.raw === true;
     const mainContent = params.mainContent !== false;
     if (selector) {
@@ -374,7 +376,9 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
         : normalizeText(await locator.innerText());
     }
     if (raw) {
-      return normalizeText(await page.evaluate(() => document.body.textContent ?? ""));
+      return normalizeText(
+        await page.evaluate(() => document.body.textContent ?? "")
+      );
     }
     if (mainContent) {
       return normalizeText(
@@ -383,14 +387,14 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
             document.querySelector("main, article, [role='main']") ??
             document.body;
           return (main as HTMLElement).innerText ?? main.textContent ?? "";
-        }),
+        })
       );
     }
     return normalizeText(await page.locator("body").innerText());
   }
 
   private async querySelector(
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ): Promise<Array<Record<string, unknown>>> {
     const page = this.getPage(params);
     const selector = String(params.selector ?? "");
@@ -422,7 +426,7 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
                 .trim()
                 .slice(0, 200),
               attributes: Object.fromEntries(
-                [...el.attributes].map((attr) => [attr.name, attr.value]),
+                [...el.attributes].map((attr) => [attr.name, attr.value])
               ),
               rect: {
                 x: rect.x,
@@ -432,15 +436,16 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
               },
             };
           }),
-      { limit, visibleOnly },
+      { limit, visibleOnly }
     );
   }
 
   private async getContentSummary(
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     const page = this.getPage(params);
-    const selector = typeof params.selector === "string" ? params.selector : null;
+    const selector =
+      typeof params.selector === "string" ? params.selector : null;
     const maxHeadings = Number(params.maxHeadings ?? 20);
     const maxLinks = Number(params.maxLinks ?? 20);
     const maxTextLength = Number(params.maxTextLength ?? 4000);
@@ -491,7 +496,9 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
           throw new Error("Summary target is not an element");
         }
 
-        clone.querySelectorAll(noiseSelectors.join(",")).forEach((el) => el.remove());
+        clone
+          .querySelectorAll(noiseSelectors.join(","))
+          .forEach((el) => el.remove());
 
         clone.querySelectorAll("*").forEach((el) => {
           const style = window.getComputedStyle(el);
@@ -544,10 +551,9 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
               })),
           }));
 
-        const text = cleanText(clone.innerText || clone.textContent || "").slice(
-          0,
-          maxTextLength,
-        );
+        const text = cleanText(
+          clone.innerText || clone.textContent || ""
+        ).slice(0, maxTextLength);
 
         return {
           url: location.href,
@@ -559,83 +565,95 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
           text,
         };
       },
-      { selector, maxHeadings, maxLinks, maxTextLength },
+      { selector, maxHeadings, maxLinks, maxTextLength }
     );
   }
 
   private async getFormValues(
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     const page = this.getPage(params);
     const selector = String(params.selector ?? "");
-    return await page.locator(selector).first().evaluate((form) => {
-      if (!(form instanceof HTMLFormElement)) {
-        throw new Error("Selector does not point to a form");
-      }
-      const data: Record<string, unknown> = {};
-      for (const el of [...form.elements]) {
-        if (
-          !(el instanceof HTMLElement) ||
-          !("name" in el) ||
-          typeof el.name !== "string" ||
-          !el.name
-        ) {
-          continue;
+    return await page
+      .locator(selector)
+      .first()
+      .evaluate((form) => {
+        if (!(form instanceof HTMLFormElement)) {
+          throw new Error("Selector does not point to a form");
         }
-        if (
-          el instanceof HTMLInputElement &&
-          (el.type === "checkbox" || el.type === "radio")
-        ) {
-          data[el.name] = el.checked;
-        } else if ("value" in el) {
-          data[el.name] = (el as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement)
-            .value;
+        const data: Record<string, unknown> = {};
+        for (const el of [...form.elements]) {
+          if (
+            !(el instanceof HTMLElement) ||
+            !("name" in el) ||
+            typeof el.name !== "string" ||
+            !el.name
+          ) {
+            continue;
+          }
+          if (
+            el instanceof HTMLInputElement &&
+            (el.type === "checkbox" || el.type === "radio")
+          ) {
+            data[el.name] = el.checked;
+          } else if ("value" in el) {
+            data[el.name] = (
+              el as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
+            ).value;
+          }
         }
-      }
-      return data;
-    });
+        return data;
+      });
   }
 
   private async getAccessibilityTree(
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ): Promise<string> {
     const page = this.getPage(params);
     const maxElements = Number(params.maxElements ?? 500);
-    const entries = await page.locator("a,button,input,select,textarea,[role],[tabindex]").evaluateAll(
-      (elements, limit) =>
-        elements.slice(0, limit).map((el, index) => ({
-          ref: index + 1,
-          tag: el.tagName.toLowerCase(),
-          role: el.getAttribute("role") || null,
-          name:
-            (el.getAttribute("aria-label") ||
+    const entries = await page
+      .locator("a,button,input,select,textarea,[role],[tabindex]")
+      .evaluateAll(
+        (elements, limit) =>
+          elements.slice(0, limit).map((el, index) => ({
+            ref: index + 1,
+            tag: el.tagName.toLowerCase(),
+            role: el.getAttribute("role") || null,
+            name: (
+              el.getAttribute("aria-label") ||
               (el as HTMLElement).innerText ||
               (el as HTMLInputElement).value ||
               el.getAttribute("name") ||
-              "")
+              ""
+            )
               .trim()
               .slice(0, 160),
-          disabled:
-            el instanceof HTMLButtonElement ||
-            el instanceof HTMLInputElement ||
-            el instanceof HTMLSelectElement ||
-            el instanceof HTMLTextAreaElement
-              ? el.disabled
-              : el.getAttribute("aria-disabled") === "true",
-        })),
-      maxElements,
-    );
+            disabled:
+              el instanceof HTMLButtonElement ||
+              el instanceof HTMLInputElement ||
+              el instanceof HTMLSelectElement ||
+              el instanceof HTMLTextAreaElement
+                ? el.disabled
+                : el.getAttribute("aria-disabled") === "true",
+          })),
+        maxElements
+      );
     return entries
       .map(
         (entry) =>
-          `@${entry.ref} <${entry.tag}> role=${entry.role ?? "none"} name="${entry.name}" disabled=${entry.disabled}`,
+          `@${entry.ref} <${entry.tag}> role=${entry.role ?? "none"} name="${
+            entry.name
+          }" disabled=${entry.disabled}`
       )
       .join("\n");
   }
 
   private async click(params: Record<string, unknown>): Promise<null> {
     const page = this.getPage(params);
-    await page.locator(String(params.selector ?? "")).first().click();
+    await page
+      .locator(String(params.selector ?? ""))
+      .first()
+      .click();
     return null;
   }
 
@@ -668,10 +686,7 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
     }
     const x = Number(params.x ?? 0);
     const y = Number(params.y ?? 0);
-    await page.evaluate(
-      ([dx, dy]) => window.scrollBy(dx, dy),
-      [x, y] as const,
-    );
+    await page.evaluate(([dx, dy]) => window.scrollBy(dx, dy), [x, y] as const);
     return null;
   }
 
@@ -691,10 +706,10 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
       typeof params.value === "string"
         ? { value: params.value }
         : typeof params.label === "string"
-          ? { label: params.label }
-          : typeof params.index === "number"
-            ? { index: params.index }
-            : undefined;
+        ? { label: params.label }
+        : typeof params.index === "number"
+        ? { index: params.index }
+        : undefined;
     if (!option) {
       throw new Error("Provide value, label, or index");
     }
@@ -713,7 +728,9 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
     return null;
   }
 
-  private async clickAnnotation(params: Record<string, unknown>): Promise<null> {
+  private async clickAnnotation(
+    params: Record<string, unknown>
+  ): Promise<null> {
     const page = this.getPage(params);
     const ref = Number(params.ref);
     await page.locator(`[data-ai-browser-ref="${ref}"]`).first().click();
@@ -731,49 +748,59 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
     return null;
   }
 
-  private async captureScreenshot(params: Record<string, unknown>): Promise<string> {
+  private async captureScreenshot(
+    params: Record<string, unknown>
+  ): Promise<string> {
     const page = this.getPage(params);
     const buffer = await page.screenshot({ type: "png" });
     return `data:image/png;base64,${buffer.toString("base64")}`;
   }
 
   private async getComputedStyles(
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ): Promise<Record<string, string>> {
     const page = this.getPage(params);
     const selector = String(params.selector ?? "");
     const properties = Array.isArray(params.properties)
       ? params.properties.map(String)
       : null;
-    return await page.locator(selector).first().evaluate(
-      (el, props) => {
+    return await page
+      .locator(selector)
+      .first()
+      .evaluate((el, props) => {
         const style = getComputedStyle(el);
         const keys = props ?? Array.from(style);
         return Object.fromEntries(
-          keys.map((key) => [key, style.getPropertyValue(key)]),
+          keys.map((key) => [key, style.getPropertyValue(key)])
         );
-      },
-      properties,
-    );
+      }, properties);
   }
 
   private async getElementRect(
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ): Promise<Record<string, number>> {
     const page = this.getPage(params);
-    const box = await page.locator(String(params.selector ?? "")).first().boundingBox();
+    const box = await page
+      .locator(String(params.selector ?? ""))
+      .first()
+      .boundingBox();
     if (!box) {
       throw new Error("Element is not visible");
     }
-    return { ...box, devicePixelRatio: await page.evaluate(() => window.devicePixelRatio || 1) };
+    return {
+      ...box,
+      devicePixelRatio: await page.evaluate(() => window.devicePixelRatio || 1),
+    };
   }
 
   private async getPageMetrics(
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     const page = this.getPage(params);
     return await page.evaluate(() => {
-      const nav = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+      const nav = performance.getEntriesByType("navigation")[0] as
+        | PerformanceNavigationTiming
+        | undefined;
       return {
         url: location.href,
         title: document.title,
@@ -791,7 +818,9 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
     });
   }
 
-  private async annotatePage(params: Record<string, unknown>): Promise<{ count: number }> {
+  private async annotatePage(
+    params: Record<string, unknown>
+  ): Promise<{ count: number }> {
     const page = this.getPage(params);
     return await page.evaluate(() => {
       const existing = document.getElementById("__ai_browser_overlay_root__");
@@ -807,7 +836,7 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
 
       const interactive = [
         ...document.querySelectorAll(
-          "a,button,input,select,textarea,[role='button'],[role='link'],[tabindex]",
+          "a,button,input,select,textarea,[role='button'],[role='link'],[tabindex]"
         ),
       ].filter((el) => {
         const rect = el.getBoundingClientRect();
@@ -842,7 +871,9 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
     });
   }
 
-  private async clearAnnotations(params: Record<string, unknown>): Promise<null> {
+  private async clearAnnotations(
+    params: Record<string, unknown>
+  ): Promise<null> {
     const page = this.getPage(params);
     await page.evaluate(() => {
       document
@@ -858,25 +889,28 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
     const selector = String(params.selector ?? "");
     const color = String(params.color ?? "rgba(229, 62, 62, 0.3)");
     const duration = Number(params.duration ?? 3000);
-    await page.locator(selector).first().evaluate(
-      (el, data) => {
-        const rect = el.getBoundingClientRect();
-        const overlay = document.createElement("div");
-        overlay.id = "__ai_browser_highlight__";
-        overlay.style.position = "absolute";
-        overlay.style.left = `${window.scrollX + rect.left}px`;
-        overlay.style.top = `${window.scrollY + rect.top}px`;
-        overlay.style.width = `${rect.width}px`;
-        overlay.style.height = `${rect.height}px`;
-        overlay.style.background = data.color;
-        overlay.style.outline = "2px solid #d92d20";
-        overlay.style.pointerEvents = "none";
-        overlay.style.zIndex = "2147483647";
-        document.body.appendChild(overlay);
-        window.setTimeout(() => overlay.remove(), data.duration);
-      },
-      { color, duration },
-    );
+    await page
+      .locator(selector)
+      .first()
+      .evaluate(
+        (el, data) => {
+          const rect = el.getBoundingClientRect();
+          const overlay = document.createElement("div");
+          overlay.id = "__ai_browser_highlight__";
+          overlay.style.position = "absolute";
+          overlay.style.left = `${window.scrollX + rect.left}px`;
+          overlay.style.top = `${window.scrollY + rect.top}px`;
+          overlay.style.width = `${rect.width}px`;
+          overlay.style.height = `${rect.height}px`;
+          overlay.style.background = data.color;
+          overlay.style.outline = "2px solid #d92d20";
+          overlay.style.pointerEvents = "none";
+          overlay.style.zIndex = "2147483647";
+          document.body.appendChild(overlay);
+          window.setTimeout(() => overlay.remove(), data.duration);
+        },
+        { color, duration }
+      );
     return null;
   }
 
@@ -888,16 +922,23 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
     }, code);
   }
 
-  private async waitForSelector(params: Record<string, unknown>): Promise<null> {
+  private async waitForSelector(
+    params: Record<string, unknown>
+  ): Promise<null> {
     const page = this.getPage(params);
-    await page.locator(String(params.selector ?? "")).first().waitFor({
-      state: params.visible === true ? "visible" : "attached",
-      timeout: Number(params.timeout ?? 10000),
-    });
+    await page
+      .locator(String(params.selector ?? ""))
+      .first()
+      .waitFor({
+        state: params.visible === true ? "visible" : "attached",
+        timeout: Number(params.timeout ?? 10000),
+      });
     return null;
   }
 
-  private async waitForNavigation(params: Record<string, unknown>): Promise<null> {
+  private async waitForNavigation(
+    params: Record<string, unknown>
+  ): Promise<null> {
     const page = this.getPage(params);
     await page.waitForLoadState("load", {
       timeout: Number(params.timeout ?? 30000),
@@ -905,7 +946,9 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
     return null;
   }
 
-  private async waitForNetworkIdle(params: Record<string, unknown>): Promise<null> {
+  private async waitForNetworkIdle(
+    params: Record<string, unknown>
+  ): Promise<null> {
     const page = this.getPage(params);
     await page.waitForLoadState("networkidle", {
       timeout: Number(params.timeout ?? 10000),
@@ -914,7 +957,7 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
   }
 
   private async getCookies(
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ): Promise<Array<Record<string, unknown>>> {
     const url =
       typeof params.url === "string" && params.url
@@ -969,7 +1012,7 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
   }
 
   private async getStorage(
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ): Promise<Record<string, string> | string | null> {
     const page = this.getPage(params);
     const type = params.type === "session" ? "sessionStorage" : "localStorage";
@@ -977,13 +1020,13 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
       return await page.evaluate(
         ([storageType, key]) =>
           window[storageType as "localStorage" | "sessionStorage"].getItem(key),
-        [type, params.key] as const,
+        [type, params.key] as const
       );
     }
     return await page.evaluate((storageType) => {
       const store = window[storageType as "localStorage" | "sessionStorage"];
       return Object.fromEntries(
-        Object.keys(store).map((key) => [key, store.getItem(key) ?? ""]),
+        Object.keys(store).map((key) => [key, store.getItem(key) ?? ""])
       );
     }, type);
   }
@@ -995,10 +1038,10 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
       ([storageType, key, value]) => {
         window[storageType as "localStorage" | "sessionStorage"].setItem(
           key,
-          value,
+          value
         );
       },
-      [type, String(params.key ?? ""), String(params.value ?? "")] as const,
+      [type, String(params.key ?? ""), String(params.value ?? "")] as const
     );
     return null;
   }
@@ -1012,7 +1055,9 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
     return null;
   }
 
-  private async setDialogBehavior(params: Record<string, unknown>): Promise<null> {
+  private async setDialogBehavior(
+    params: Record<string, unknown>
+  ): Promise<null> {
     const page = this.getPage(params);
     const state = this.getPageState(page);
     state.dialogBehavior = {
@@ -1023,13 +1068,13 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
   }
 
   private async getLastDialog(
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ): Promise<Record<string, unknown> | null> {
     return this.getPageState(this.getPage(params)).lastDialog;
   }
 
   private async getConsoleLogs(
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ): Promise<Array<Record<string, unknown>>> {
     const entries = this.getPageState(this.getPage(params)).consoleLogs;
     const level = typeof params.level === "string" ? params.level : "all";
@@ -1040,7 +1085,7 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
   }
 
   private async getPageErrors(
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ): Promise<Array<Record<string, unknown>>> {
     const limit = Number(params.limit ?? 50);
     return this.getPageState(this.getPage(params)).pageErrors.slice(-limit);
@@ -1048,7 +1093,9 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
 
   private getPage(params: Record<string, unknown>): Page {
     const page = this.pageFromTabId(
-      typeof params.tabId === "number" ? params.tabId : this.resolveActiveTabId(),
+      typeof params.tabId === "number"
+        ? params.tabId
+        : this.resolveActiveTabId()
     );
     this.activeTabId = this.tabIdForPage(page);
     return page;

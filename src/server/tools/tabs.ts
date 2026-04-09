@@ -1,19 +1,15 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { send } from "../bridge.js";
+import {
+  createBridgeJsonResult,
+  createBridgeTextResult,
+} from "./toolResult.js";
 
 export function registerTabTools(server: McpServer): void {
   server.tool("list_tabs", "List all open browser tabs", {}, async () => {
     const res = await send("tabs.list");
-    return {
-      content: [
-        {
-          type: "text",
-          text: res.success ? JSON.stringify(res.data, null, 2) : res.error!,
-        },
-      ],
-      isError: !res.success,
-    };
+    return createBridgeJsonResult(res.success, res.data, res.error);
   });
 
   server.tool(
@@ -22,16 +18,8 @@ export function registerTabTools(server: McpServer): void {
     { url: z.string().describe("URL to open") },
     async ({ url }) => {
       const res = await send("tabs.open", { url });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success ? JSON.stringify(res.data, null, 2) : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeJsonResult(res.success, res.data, res.error);
+    }
   );
 
   server.tool(
@@ -40,13 +28,8 @@ export function registerTabTools(server: McpServer): void {
     { tabId: z.number().describe("Tab ID to close") },
     async ({ tabId }) => {
       const res = await send("tabs.close", { tabId });
-      return {
-        content: [
-          { type: "text", text: res.success ? "Tab closed" : res.error! },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(res.success, "Tab closed", res.error);
+    }
   );
 
   server.tool(
@@ -58,16 +41,8 @@ export function registerTabTools(server: McpServer): void {
     },
     async ({ url, tabId }) => {
       const res = await send("tabs.navigate", { url, tabId });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success ? JSON.stringify(res.data, null, 2) : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeJsonResult(res.success, res.data, res.error);
+    }
   );
 
   server.tool(
@@ -76,13 +51,8 @@ export function registerTabTools(server: McpServer): void {
     { tabId: z.number().describe("Tab ID to activate") },
     async ({ tabId }) => {
       const res = await send("tabs.activate", { tabId });
-      return {
-        content: [
-          { type: "text", text: res.success ? "Tab activated" : res.error! },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(res.success, "Tab activated", res.error);
+    }
   );
 
   server.tool(
@@ -93,13 +63,8 @@ export function registerTabTools(server: McpServer): void {
     },
     async ({ tabId }) => {
       const res = await send("tabs.goBack", { tabId });
-      return {
-        content: [
-          { type: "text", text: res.success ? "Navigated back" : res.error! },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(res.success, "Navigated back", res.error);
+    }
   );
 
   server.tool(
@@ -110,16 +75,12 @@ export function registerTabTools(server: McpServer): void {
     },
     async ({ tabId }) => {
       const res = await send("tabs.goForward", { tabId });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success ? "Navigated forward" : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(
+        res.success,
+        "Navigated forward",
+        res.error
+      );
+    }
   );
 
   server.tool(
@@ -130,12 +91,7 @@ export function registerTabTools(server: McpServer): void {
     },
     async ({ tabId }) => {
       const res = await send("tabs.reload", { tabId });
-      return {
-        content: [
-          { type: "text", text: res.success ? "Tab reloaded" : res.error! },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(res.success, "Tab reloaded", res.error);
+    }
   );
 }

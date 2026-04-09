@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { send } from "../bridge.js";
+import { createBridgeTextResult } from "./toolResult.js";
 
 export function registerInteractionTools(server: McpServer): void {
   server.tool(
@@ -12,11 +13,8 @@ export function registerInteractionTools(server: McpServer): void {
     },
     async ({ tabId, selector }) => {
       const res = await send("interaction.click", { tabId, selector });
-      return {
-        content: [{ type: "text", text: res.success ? "Clicked" : res.error! }],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(res.success, "Clicked", res.error);
+    }
   );
 
   server.tool(
@@ -38,11 +36,8 @@ export function registerInteractionTools(server: McpServer): void {
         text,
         clear,
       });
-      return {
-        content: [{ type: "text", text: res.success ? "Typed" : res.error! }],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(res.success, "Typed", res.error);
+    }
   );
 
   server.tool(
@@ -59,13 +54,8 @@ export function registerInteractionTools(server: McpServer): void {
     },
     async ({ tabId, x, y, selector }) => {
       const res = await send("interaction.scroll", { tabId, x, y, selector });
-      return {
-        content: [
-          { type: "text", text: res.success ? "Scrolled" : res.error! },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(res.success, "Scrolled", res.error);
+    }
   );
 
   server.tool(
@@ -83,13 +73,8 @@ export function registerInteractionTools(server: McpServer): void {
     },
     async ({ tabId, key, selector }) => {
       const res = await send("interaction.pressKey", { tabId, key, selector });
-      return {
-        content: [
-          { type: "text", text: res.success ? "Key pressed" : res.error! },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(res.success, "Key pressed", res.error);
+    }
   );
 
   server.tool(
@@ -101,16 +86,8 @@ export function registerInteractionTools(server: McpServer): void {
     },
     async ({ ref, tabId }) => {
       const res = await send("interaction.clickAnnotation", { ref, tabId });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success ? `Clicked @${ref}` : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(res.success, `Clicked @${ref}`, res.error);
+    }
   );
 
   server.tool(
@@ -132,16 +109,12 @@ export function registerInteractionTools(server: McpServer): void {
         clear,
         tabId,
       });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success ? `Typed into @${ref}` : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(
+        res.success,
+        `Typed into @${ref}`,
+        res.error
+      );
+    }
   );
 
   server.tool(
@@ -162,13 +135,8 @@ export function registerInteractionTools(server: McpServer): void {
         label,
         index,
       });
-      return {
-        content: [
-          { type: "text", text: res.success ? "Option selected" : res.error! },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(res.success, "Option selected", res.error);
+    }
   );
 
   server.tool(
@@ -188,17 +156,11 @@ export function registerInteractionTools(server: McpServer): void {
         selector,
         checked,
       });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success
-              ? `Element ${checked === false ? "unchecked" : "checked"}`
-              : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(
+        res.success,
+        `Element ${checked === false ? "unchecked" : "checked"}`,
+        res.error
+      );
+    }
   );
 }

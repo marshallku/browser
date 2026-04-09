@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { send } from "../bridge.js";
+import { createTextResult } from "./toolResult.js";
 
 export function registerDialogTools(server: McpServer): void {
   server.tool(
@@ -19,18 +20,11 @@ export function registerDialogTools(server: McpServer): void {
         text,
         tabId,
       });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success
-              ? `Dialog behavior set to: ${action}`
-              : res.error!,
-          },
-        ],
+      return createTextResult({
+        text: res.success ? `Dialog behavior set to: ${action}` : res.error!,
         isError: !res.success,
-      };
-    },
+      });
+    }
   );
 
   server.tool(
@@ -41,19 +35,14 @@ export function registerDialogTools(server: McpServer): void {
     },
     async ({ tabId }) => {
       const res = await send("dialog.getLast", { tabId });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success
-              ? res.data
-                ? JSON.stringify(res.data, null, 2)
-                : "No dialog has been captured yet"
-              : res.error!,
-          },
-        ],
+      return createTextResult({
+        text: res.success
+          ? res.data
+            ? JSON.stringify(res.data, null, 2)
+            : "No dialog has been captured yet"
+          : res.error!,
         isError: !res.success,
-      };
-    },
+      });
+    }
   );
 }

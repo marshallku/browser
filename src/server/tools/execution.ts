@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { send } from "../bridge.js";
+import { createTextResult } from "./toolResult.js";
 
 export function registerExecutionTools(server: McpServer): void {
   server.tool(
@@ -13,13 +14,13 @@ export function registerExecutionTools(server: McpServer): void {
     async ({ tabId, code }) => {
       const res = await send("execution.executeJs", { tabId, code });
       if (!res.success) {
-        return { content: [{ type: "text", text: res.error! }], isError: true };
+        return createTextResult({ text: res.error!, isError: true });
       }
       const text =
         typeof res.data === "string"
           ? res.data
           : JSON.stringify(res.data, null, 2);
-      return { content: [{ type: "text", text }] };
-    },
+      return createTextResult({ text });
+    }
   );
 }

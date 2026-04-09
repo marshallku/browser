@@ -1,19 +1,14 @@
 import { randomUUID } from "node:crypto";
-import type {
-  BridgeAction,
-  BridgeResponse,
-} from "../../shared/protocol.js";
+import type { BridgeAction, BridgeResponse } from "../../shared/protocol.js";
 import type { BrowserDriver } from "../bridge.js";
-
-interface CookieEntry {
-  name: string;
-  value: string;
-  domain: string;
-  path: string;
-  secure: boolean;
-  httpOnly: boolean;
-  expirationDate?: number;
-}
+import {
+  cleanHtml,
+  domainMatches,
+  extractTitle,
+  htmlToText,
+  parseSetCookie,
+  type CookieEntry,
+} from "../utils/fetchContent.js";
 
 interface FetchTab {
   tabId: number;
@@ -44,7 +39,7 @@ export class FetchBrowserDriver implements BrowserDriver {
 
   async execute(
     action: BridgeAction,
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ): Promise<BridgeResponse> {
     const id = randomUUID();
 
@@ -62,7 +57,7 @@ export class FetchBrowserDriver implements BrowserDriver {
 
   private async dispatch(
     action: BridgeAction,
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ): Promise<unknown> {
     switch (action) {
       case "tabs.list":
@@ -78,14 +73,22 @@ export class FetchBrowserDriver implements BrowserDriver {
       case "tabs.close":
         return this.closeTab(this.requireTabId(params));
       case "tabs.navigate":
-        return this.navigate(this.resolveTabId(params), String(params.url ?? ""));
+        return this.navigate(
+          this.resolveTabId(params),
+          String(params.url ?? "")
+        );
       case "tabs.activate":
         return this.activateTab(this.requireTabId(params));
       case "tabs.goBack":
       case "tabs.goForward":
-        return this.unsupported("History navigation is not available in http-fetch runtime");
+        return this.unsupported(
+          "History navigation is not available in http-fetch runtime"
+        );
       case "tabs.reload":
-        return this.navigate(this.resolveTabId(params), this.getTab(params).url);
+        return this.navigate(
+          this.resolveTabId(params),
+          this.getTab(params).url
+        );
       case "dom.getHtml":
         return this.getHtml(params);
       case "dom.getText":
@@ -107,7 +110,9 @@ export class FetchBrowserDriver implements BrowserDriver {
       case "interaction.check":
       case "interaction.clickAnnotation":
       case "interaction.typeAnnotation":
-        return this.unsupported("Interactive control is not available in http-fetch runtime");
+        return this.unsupported(
+          "Interactive control is not available in http-fetch runtime"
+        );
       case "capture.screenshot":
       case "capture.computedStyles":
       case "capture.annotate":
@@ -116,7 +121,9 @@ export class FetchBrowserDriver implements BrowserDriver {
       case "capture.elementRect":
         return this.unsupported("Visual capture requires a browser runtime");
       case "execution.executeJs":
-        return this.unsupported("JavaScript execution requires a browser runtime");
+        return this.unsupported(
+          "JavaScript execution requires a browser runtime"
+        );
       case "wait.selector":
         return this.unsupported("Selector waits require a browser runtime");
       case "wait.navigation":
@@ -144,7 +151,9 @@ export class FetchBrowserDriver implements BrowserDriver {
       case "dialog.getLast":
         return this.unsupported("Dialogs require a browser runtime");
       default:
-        return this.unsupported(`Unsupported action: ${action satisfies never}`);
+        return this.unsupported(
+          `Unsupported action: ${action satisfies never}`
+        );
     }
   }
 
@@ -184,7 +193,7 @@ export class FetchBrowserDriver implements BrowserDriver {
 
   private async navigate(
     tabId: number,
-    rawUrl: string,
+    rawUrl: string
   ): Promise<Record<string, unknown>> {
     const tab = this.getTab({ tabId });
     const url = this.normalizeUrl(rawUrl);
@@ -236,7 +245,7 @@ export class FetchBrowserDriver implements BrowserDriver {
   }
 
   private async getContentSummary(
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     const tab = this.getTab(params);
     const maxHeadings = Number(params.maxHeadings ?? 20);
@@ -251,7 +260,9 @@ export class FetchBrowserDriver implements BrowserDriver {
         text: htmlToText(match[2]).slice(0, 200),
       }))
       .filter((item) => item.text);
-    const links = [...html.matchAll(/<a[^>]*href=(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi)]
+    const links = [
+      ...html.matchAll(/<a[^>]*href=(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi),
+    ]
       .slice(0, maxLinks)
       .map((match) => ({
         href: match[2],
@@ -271,7 +282,7 @@ export class FetchBrowserDriver implements BrowserDriver {
   }
 
   private async getMetrics(
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     const tab = this.getTab(params);
     return {
@@ -314,13 +325,13 @@ export class FetchBrowserDriver implements BrowserDriver {
     const cookies = this.cookieJar.get(domain) ?? [];
     this.cookieJar.set(
       domain,
-      cookies.filter((cookie) => cookie.name !== String(params.name ?? "")),
+      cookies.filter((cookie) => cookie.name !== String(params.name ?? ""))
     );
     return null;
   }
 
   private async getStorage(
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ): Promise<Record<string, string> | string | null> {
     const tab = this.getTab(params);
     const store =
@@ -354,7 +365,9 @@ export class FetchBrowserDriver implements BrowserDriver {
       return {};
     }
     return {
-      Cookie: cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join("; "),
+      Cookie: cookies
+        .map((cookie) => `${cookie.name}=${cookie.value}`)
+        .join("; "),
     };
   }
 
@@ -363,8 +376,8 @@ export class FetchBrowserDriver implements BrowserDriver {
       typeof response.headers.getSetCookie === "function"
         ? response.headers.getSetCookie()
         : response.headers.get("set-cookie")
-          ? [response.headers.get("set-cookie")!]
-          : [];
+        ? [response.headers.get("set-cookie")!]
+        : [];
 
     for (const header of setCookies) {
       const parsed = parseSetCookie(url, header);
@@ -383,7 +396,7 @@ export class FetchBrowserDriver implements BrowserDriver {
           entry.name === cookie.name &&
           entry.path === cookie.path &&
           entry.domain === cookie.domain
-        ),
+        )
     );
     filtered.push(cookie);
     this.cookieJar.set(key, filtered);
@@ -402,7 +415,7 @@ export class FetchBrowserDriver implements BrowserDriver {
             return false;
           }
           return url.pathname.startsWith(cookie.path);
-        }),
+        })
       );
   }
 
@@ -445,84 +458,4 @@ export class FetchBrowserDriver implements BrowserDriver {
   private async unsupported(message: string): Promise<never> {
     throw new Error(message);
   }
-}
-
-function extractTitle(html: string): string | null {
-  const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  return match ? decodeEntities(match[1].trim()) : null;
-}
-
-function cleanHtml(html: string): string {
-  return html
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
-    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "")
-    .replace(/<svg\b[^<]*(?:(?!<\/svg>)<[^<]*)*<\/svg>/gi, "")
-    .replace(/\sdata-[\w-]+=(["']).*?\1/gi, "");
-}
-
-function htmlToText(html: string): string {
-  return decodeEntities(
-    cleanHtml(html)
-      .replace(/<br\s*\/?>/gi, "\n")
-      .replace(/<\/(p|div|section|article|li|tr|h[1-6])>/gi, "\n")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/[ \t]+\n/g, "\n")
-      .replace(/\n{3,}/g, "\n\n")
-      .replace(/[ \t]{2,}/g, " ")
-      .trim(),
-  );
-}
-
-function parseSetCookie(url: string, header: string): CookieEntry | null {
-  const normalized = new URL(url);
-  const parts = header.split(";").map((part) => part.trim());
-  const [nameValue, ...attrs] = parts;
-  const eq = nameValue.indexOf("=");
-  if (eq <= 0) {
-    return null;
-  }
-
-  const cookie: CookieEntry = {
-    name: nameValue.slice(0, eq),
-    value: nameValue.slice(eq + 1),
-    domain: normalized.hostname,
-    path: "/",
-    secure: false,
-    httpOnly: false,
-  };
-
-  for (const attr of attrs) {
-    const [rawKey, ...rawValue] = attr.split("=");
-    const key = rawKey.toLowerCase();
-    const value = rawValue.join("=");
-    if (key === "domain" && value) cookie.domain = value.replace(/^\./, "");
-    else if (key === "path" && value) cookie.path = value;
-    else if (key === "secure") cookie.secure = true;
-    else if (key === "httponly") cookie.httpOnly = true;
-    else if (key === "expires" && value) {
-      const ts = Date.parse(value);
-      if (!Number.isNaN(ts)) cookie.expirationDate = ts / 1000;
-    } else if (key === "max-age" && value) {
-      const seconds = Number(value);
-      if (!Number.isNaN(seconds)) {
-        cookie.expirationDate = Date.now() / 1000 + seconds;
-      }
-    }
-  }
-
-  return cookie;
-}
-
-function domainMatches(hostname: string, domain: string): boolean {
-  return hostname === domain || hostname.endsWith(`.${domain}`);
-}
-
-function decodeEntities(text: string): string {
-  return text
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
 }

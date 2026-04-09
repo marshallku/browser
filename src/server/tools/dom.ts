@@ -1,6 +1,10 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { send } from "../bridge.js";
+import {
+  createBridgeJsonResult,
+  createBridgeTextResult,
+} from "./toolResult.js";
 
 export function registerDomTools(server: McpServer): void {
   server.tool(
@@ -20,18 +24,13 @@ export function registerDomTools(server: McpServer): void {
         .boolean()
         .optional()
         .describe(
-          "Remove script/style/svg tags, comments, data-* attrs (default: true)",
+          "Remove script/style/svg tags, comments, data-* attrs (default: true)"
         ),
     },
     async ({ tabId, selector, outer, clean }) => {
       const res = await send("dom.getHtml", { tabId, selector, outer, clean });
-      return {
-        content: [
-          { type: "text", text: res.success ? String(res.data) : res.error! },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(res.success, res.data, res.error);
+    }
   );
 
   server.tool(
@@ -51,7 +50,7 @@ export function registerDomTools(server: McpServer): void {
         .boolean()
         .optional()
         .describe(
-          "Auto-detect main content area when no selector given (default: true)",
+          "Auto-detect main content area when no selector given (default: true)"
         ),
     },
     async ({ tabId, selector, raw, mainContent }) => {
@@ -61,13 +60,8 @@ export function registerDomTools(server: McpServer): void {
         raw,
         mainContent,
       });
-      return {
-        content: [
-          { type: "text", text: res.success ? String(res.data) : res.error! },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(res.success, res.data, res.error);
+    }
   );
 
   server.tool(
@@ -78,7 +72,9 @@ export function registerDomTools(server: McpServer): void {
       selector: z
         .string()
         .optional()
-        .describe("Optional CSS selector to summarize instead of the auto-detected main content"),
+        .describe(
+          "Optional CSS selector to summarize instead of the auto-detected main content"
+        ),
       maxHeadings: z
         .number()
         .optional()
@@ -100,16 +96,8 @@ export function registerDomTools(server: McpServer): void {
         maxLinks,
         maxTextLength,
       });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success ? JSON.stringify(res.data, null, 2) : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeJsonResult(res.success, res.data, res.error);
+    }
   );
 
   server.tool(
@@ -131,16 +119,8 @@ export function registerDomTools(server: McpServer): void {
         limit,
         visibleOnly,
       });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success ? JSON.stringify(res.data, null, 2) : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeJsonResult(res.success, res.data, res.error);
+    }
   );
 
   server.tool(
@@ -158,16 +138,8 @@ export function registerDomTools(server: McpServer): void {
         tabId,
         maxElements,
       });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success ? String(res.data) : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeTextResult(res.success, res.data, res.error);
+    }
   );
 
   server.tool(
@@ -179,15 +151,7 @@ export function registerDomTools(server: McpServer): void {
     },
     async ({ tabId, selector }) => {
       const res = await send("dom.formValues", { tabId, selector });
-      return {
-        content: [
-          {
-            type: "text",
-            text: res.success ? JSON.stringify(res.data, null, 2) : res.error!,
-          },
-        ],
-        isError: !res.success,
-      };
-    },
+      return createBridgeJsonResult(res.success, res.data, res.error);
+    }
   );
 }

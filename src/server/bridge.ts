@@ -6,7 +6,7 @@ export interface BrowserDriver {
   close(): Promise<void>;
   execute(
     action: BridgeAction,
-    params: Record<string, unknown>,
+    params: Record<string, unknown>
   ): Promise<BridgeResponse>;
 }
 
@@ -24,7 +24,7 @@ export async function shutdownBridge(): Promise<void> {
 
 export async function send(
   action: BridgeAction,
-  params: Record<string, unknown> = {},
+  params: Record<string, unknown> = {}
 ): Promise<BridgeResponse> {
   if (!driver) {
     return {
