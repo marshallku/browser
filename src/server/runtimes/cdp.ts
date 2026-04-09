@@ -218,6 +218,8 @@ export class CdpBrowserDriver implements BrowserDriver {
                 return this.getHtml(params);
             case "dom.getText":
                 return this.getText(params);
+            case "dom.contentSummary":
+                return this.unsupported("Content summary is not implemented in the CDP runtime");
             case "dom.querySelector":
                 return this.querySelector(params);
             case "dom.formValues":

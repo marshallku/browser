@@ -120,6 +120,8 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
         return this.getHtml(params);
       case "dom.getText":
         return this.getText(params);
+      case "dom.contentSummary":
+        return this.getContentSummary(params);
       case "dom.querySelector":
         return this.querySelector(params);
       case "dom.formValues":
@@ -431,6 +433,133 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
             };
           }),
       { limit, visibleOnly },
+    );
+  }
+
+  private async getContentSummary(
+    params: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const page = this.getPage(params);
+    const selector = typeof params.selector === "string" ? params.selector : null;
+    const maxHeadings = Number(params.maxHeadings ?? 20);
+    const maxLinks = Number(params.maxLinks ?? 20);
+    const maxTextLength = Number(params.maxTextLength ?? 4000);
+
+    return await page.evaluate(
+      ({ selector, maxHeadings, maxLinks, maxTextLength }) => {
+        const noiseSelectors = [
+          "script",
+          "style",
+          "svg",
+          "noscript",
+          "nav",
+          "footer",
+          "header",
+          "aside",
+          "[role='navigation']",
+          "[aria-hidden='true']",
+          ".sr-only",
+          ".visually-hidden",
+          ".hidden",
+          "#cookie-banner",
+          "#cookies",
+          ".cookie-banner",
+          ".cookie-notice",
+          ".advertisement",
+          ".ads",
+        ];
+
+        const pickRoot = () => {
+          if (selector) {
+            return document.querySelector(selector);
+          }
+          return (
+            document.querySelector("main") ||
+            document.querySelector("article") ||
+            document.querySelector("[role='main']") ||
+            document.body
+          );
+        };
+
+        const root = pickRoot();
+        if (!root) {
+          throw new Error("Summary target not found");
+        }
+
+        const clone = root.cloneNode(true);
+        if (!(clone instanceof HTMLElement)) {
+          throw new Error("Summary target is not an element");
+        }
+
+        clone.querySelectorAll(noiseSelectors.join(",")).forEach((el) => el.remove());
+
+        clone.querySelectorAll("*").forEach((el) => {
+          const style = window.getComputedStyle(el);
+          if (style.display === "none" || style.visibility === "hidden") {
+            el.remove();
+          }
+        });
+
+        const cleanText = (text: string | null | undefined) =>
+          (text || "")
+            .replace(/\u00a0/g, " ")
+            .replace(/[ \t]+\n/g, "\n")
+            .replace(/\n{3,}/g, "\n\n")
+            .replace(/[ \t]{2,}/g, " ")
+            .trim();
+
+        const headings = [...clone.querySelectorAll("h1,h2,h3,h4,h5,h6")]
+          .slice(0, maxHeadings)
+          .map((el) => ({
+            level: el.tagName.toLowerCase(),
+            text: cleanText(el.textContent).slice(0, 200),
+          }))
+          .filter((item) => item.text);
+
+        const links = [...clone.querySelectorAll("a[href]")]
+          .slice(0, maxLinks)
+          .map((el) => ({
+            text: cleanText(el.textContent).slice(0, 160),
+            href: el.getAttribute("href"),
+          }))
+          .filter((item) => item.text || item.href);
+
+        const forms = [...clone.querySelectorAll("form")]
+          .slice(0, 10)
+          .map((form, index) => ({
+            index,
+            fields: [...form.querySelectorAll("input,textarea,select,button")]
+              .slice(0, 20)
+              .map((el) => ({
+                tag: el.tagName.toLowerCase(),
+                type: "type" in el ? el.type || null : null,
+                name: el.getAttribute("name"),
+                id: el.getAttribute("id"),
+                placeholder: el.getAttribute("placeholder"),
+                label:
+                  el.getAttribute("aria-label") ||
+                  (el instanceof HTMLElement
+                    ? cleanText(el.innerText).slice(0, 80)
+                    : ""),
+              })),
+          }));
+
+        const text = cleanText(clone.innerText || clone.textContent || "").slice(
+          0,
+          maxTextLength,
+        );
+
+        return {
+          url: location.href,
+          title: document.title,
+          selector: selector ?? null,
+          headings,
+          links,
+          forms,
+          text,
+        };
+      },
+      { selector, maxHeadings, maxLinks, maxTextLength },
     );
   }
 

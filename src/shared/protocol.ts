@@ -6,6 +6,7 @@ export type BridgeAction =
   | "tabs.activate"
   | "dom.getHtml"
   | "dom.getText"
+  | "dom.contentSummary"
   | "dom.querySelector"
   | "interaction.click"
   | "interaction.type"

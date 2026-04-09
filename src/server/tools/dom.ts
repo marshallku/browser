@@ -71,6 +71,48 @@ export function registerDomTools(server: McpServer): void {
   );
 
   server.tool(
+    "get_content_summary",
+    "Get a cleaned, AI-friendly summary of the current page or element. Excludes common noise like nav/footer/script/style and returns text plus lightweight structure.",
+    {
+      tabId: z.number().optional().describe("Tab ID (default: active tab)"),
+      selector: z
+        .string()
+        .optional()
+        .describe("Optional CSS selector to summarize instead of the auto-detected main content"),
+      maxHeadings: z
+        .number()
+        .optional()
+        .describe("Maximum headings to include (default: 20)"),
+      maxLinks: z
+        .number()
+        .optional()
+        .describe("Maximum links to include (default: 20)"),
+      maxTextLength: z
+        .number()
+        .optional()
+        .describe("Maximum cleaned text length (default: 4000)"),
+    },
+    async ({ tabId, selector, maxHeadings, maxLinks, maxTextLength }) => {
+      const res = await send("dom.contentSummary", {
+        tabId,
+        selector,
+        maxHeadings,
+        maxLinks,
+        maxTextLength,
+      });
+      return {
+        content: [
+          {
+            type: "text",
+            text: res.success ? JSON.stringify(res.data, null, 2) : res.error!,
+          },
+        ],
+        isError: !res.success,
+      };
+    },
+  );
+
+  server.tool(
     "query_selector",
     "Find elements matching a CSS selector",
     {

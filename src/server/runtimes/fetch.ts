@@ -90,6 +90,8 @@ export class FetchBrowserDriver implements BrowserDriver {
         return this.getHtml(params);
       case "dom.getText":
         return this.getText(params);
+      case "dom.contentSummary":
+        return this.getContentSummary(params);
       case "dom.querySelector":
         return this.unsupported("Selector queries require a DOM runtime");
       case "dom.formValues":
@@ -231,6 +233,41 @@ export class FetchBrowserDriver implements BrowserDriver {
       throw new Error("selector is not supported in http-fetch runtime");
     }
     return htmlToText(tab.html);
+  }
+
+  private async getContentSummary(
+    params: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const tab = this.getTab(params);
+    const maxHeadings = Number(params.maxHeadings ?? 20);
+    const maxLinks = Number(params.maxLinks ?? 20);
+    const maxTextLength = Number(params.maxTextLength ?? 4000);
+    const html = cleanHtml(tab.html);
+    const text = htmlToText(html).slice(0, maxTextLength);
+    const headings = [...html.matchAll(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi)]
+      .slice(0, maxHeadings)
+      .map((match) => ({
+        level: `h${match[1]}`,
+        text: htmlToText(match[2]).slice(0, 200),
+      }))
+      .filter((item) => item.text);
+    const links = [...html.matchAll(/<a[^>]*href=(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi)]
+      .slice(0, maxLinks)
+      .map((match) => ({
+        href: match[2],
+        text: htmlToText(match[3]).slice(0, 160),
+      }))
+      .filter((item) => item.text || item.href);
+
+    return {
+      url: tab.url,
+      title: tab.title,
+      selector: null,
+      headings,
+      links,
+      forms: [],
+      text,
+    };
   }
 
   private async getMetrics(
