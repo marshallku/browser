@@ -95,6 +95,7 @@ Full example:
 npm run dev
 npm run build
 npm run smoke:playwright
+npm run smoke:fill-and-submit
 ./scripts/run-mcp.sh
 ```
 
@@ -132,3 +133,27 @@ npm run smoke:playwright
 - default value column detection: `password`, then `value`, then the first column
 - default label columns: any of `label`, `name`, `title`, `site`, `url`, `username`, `email`
 - output includes `secretId`, row number, label, and a redacted preview
+
+## Scripted Automation
+
+For fixed workflows, use [fill-and-submit.sh](/home/marshall/dev/browser/scripts/fill-and-submit.sh) instead of MCP.
+
+Examples:
+
+```bash
+./scripts/fill-and-submit.sh \
+  --url https://example.com/login \
+  --fill '#email=user@example.com' \
+  --fill-secret '#password=env:LOGIN_PASSWORD' \
+  --click 'button[type=submit]' \
+  --screenshot /tmp/login-result.png
+```
+
+```bash
+./scripts/fill-and-submit.sh \
+  --url https://example.com/form \
+  --fill '#name=Marshall' \
+  --fill '#team=Browser' \
+  --wait-for '#submit' \
+  --click '#submit'
+```
