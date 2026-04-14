@@ -21,6 +21,9 @@ export function createRuntime(): BrowserDriver {
       viewportHeight: process.env.BROWSER_VIEWPORT_HEIGHT
         ? Number(process.env.BROWSER_VIEWPORT_HEIGHT)
         : 960,
+      keepaliveIntervalMs: process.env.BROWSER_KEEPALIVE_INTERVAL_MS
+        ? Number(process.env.BROWSER_KEEPALIVE_INTERVAL_MS)
+        : undefined,
     });
   }
 

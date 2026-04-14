@@ -23,6 +23,7 @@ interface PlaywrightOptions {
   startupTimeoutMs: number;
   viewportWidth: number;
   viewportHeight: number;
+  keepaliveIntervalMs?: number;
 }
 
 interface PageState {
@@ -41,6 +42,7 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
   private activeTabId: number | null = null;
   private readonly pageStates = new Map<Page, PageState>();
   private readonly secrets = getSecretStore();
+  private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: PlaywrightOptions) {
     this.options = options;
@@ -48,31 +50,54 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
 
   async init(): Promise<void> {
     const browserType = this.resolveBrowserType();
-    const launchOptions: LaunchOptions = {
-      headless: this.options.headless,
-      executablePath: this.resolveExecutablePath(),
-      timeout: this.options.startupTimeoutMs,
-    };
 
-    this.browser = await browserType.launch(launchOptions);
-    this.context = await this.browser.newContext({
-      viewport: {
-        width: this.options.viewportWidth,
-        height: this.options.viewportHeight,
-      },
-    });
+    if (this.options.userDataDir) {
+      this.context = await browserType.launchPersistentContext(
+        this.options.userDataDir,
+        {
+          headless: this.options.headless,
+          executablePath: this.resolveExecutablePath(),
+          timeout: this.options.startupTimeoutMs,
+          viewport: {
+            width: this.options.viewportWidth,
+            height: this.options.viewportHeight,
+          },
+        }
+      );
+      this.browser = null;
+    } else {
+      const launchOptions: LaunchOptions = {
+        headless: this.options.headless,
+        executablePath: this.resolveExecutablePath(),
+        timeout: this.options.startupTimeoutMs,
+      };
+
+      this.browser = await browserType.launch(launchOptions);
+      this.context = await this.browser.newContext({
+        viewport: {
+          width: this.options.viewportWidth,
+          height: this.options.viewportHeight,
+        },
+      });
+    }
 
     this.context.on("page", (page) => this.attachPage(page));
 
-    const page = await this.context.newPage();
+    const pages = this.context.pages();
+    const page = pages.length > 0 ? pages[0] : await this.context.newPage();
     this.attachPage(page);
     this.activeTabId = this.tabIdForPage(page);
+
+    this.startKeepalive();
   }
 
   async close(): Promise<void> {
+    this.stopKeepalive();
     this.pageStates.clear();
     await this.context?.close();
-    await this.browser?.close();
+    if (this.browser) {
+      await this.browser.close();
+    }
     this.context = null;
     this.browser = null;
     this.activeTabId = null;
@@ -1160,6 +1185,48 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
       waitUntil: "domcontentloaded",
       timeout: this.options.startupTimeoutMs,
     });
+  }
+
+  private startKeepalive(): void {
+    const intervalMs = this.options.keepaliveIntervalMs;
+    if (!intervalMs || intervalMs <= 0) {
+      return;
+    }
+    this.keepaliveTimer = setInterval(() => {
+      void this.runKeepalive();
+    }, intervalMs);
+    console.error(
+      `[keepalive] enabled — refreshing pages every ${Math.round(
+        intervalMs / 1000
+      )}s`
+    );
+  }
+
+  private stopKeepalive(): void {
+    if (this.keepaliveTimer) {
+      clearInterval(this.keepaliveTimer);
+      this.keepaliveTimer = null;
+    }
+  }
+
+  private async runKeepalive(): Promise<void> {
+    if (!this.context) {
+      return;
+    }
+    const pages = this.context.pages();
+    for (const page of pages) {
+      const url = page.url();
+      if (!url || url === "about:blank") {
+        continue;
+      }
+      try {
+        await page.evaluate(() =>
+          fetch(location.href, { credentials: "include" }).catch(() => {})
+        );
+      } catch {
+        // Page may have been closed or navigating — ignore.
+      }
+    }
   }
 
   private normalizeUrl(rawUrl: string): string {
