@@ -61,6 +61,27 @@ interface DialogInfo {
   timestamp: number;
 }
 
+interface NetworkEntry {
+  requestId: string;
+  url: string;
+  method: string;
+  resourceType: string;
+  status: number | null;
+  statusText: string | null;
+  requestHeaders: Record<string, string>;
+  responseHeaders: Record<string, string>;
+  requestBody: string | null;
+  responseBody: string | null;
+  responseBodyTruncated: boolean;
+  responseBodySize: number | null;
+  startTime: number;
+  endTime: number | null;
+  durationMs: number | null;
+  fromCache: boolean;
+  failed: boolean;
+  failureText: string | null;
+}
+
 interface TargetState {
   sessionId: string;
   consoleLogs: ConsoleEntry[];
@@ -69,10 +90,16 @@ interface TargetState {
   dialogBehavior: { action: "accept" | "dismiss"; text?: string };
   annotations: Map<number, string>;
   networkPending: number;
+  networkLogs: NetworkEntry[];
+  networkIndex: Map<string, NetworkEntry>;
 }
 
 const MAX_CONSOLE_ENTRIES = 200;
 const MAX_ERROR_ENTRIES = 100;
+const MAX_NETWORK_ENTRIES = 500;
+const MAX_BODY_BYTES = 100_000;
+const TEXT_CONTENT_TYPES =
+  /^(text\/|application\/(json|xml|javascript|x-www-form-urlencoded|graphql))/i;
 const CDP_TIMEOUT = 15_000;
 
 export class CdpBrowserDriver implements BrowserDriver {
@@ -304,6 +331,8 @@ export class CdpBrowserDriver implements BrowserDriver {
         return this.getConsoleLogs(params);
       case "monitor.pageErrors":
         return this.getPageErrors(params);
+      case "monitor.networkLogs":
+        return this.getNetworkLogs(params);
 
       default:
         throw new Error(`Unsupported action: ${action satisfies never}`);
@@ -479,6 +508,8 @@ export class CdpBrowserDriver implements BrowserDriver {
       dialogBehavior: { action: "accept" },
       annotations: new Map(),
       networkPending: 0,
+      networkLogs: [],
+      networkIndex: new Map(),
     };
 
     this.sessions.set(targetId, state);
@@ -553,19 +584,114 @@ export class CdpBrowserDriver implements BrowserDriver {
       });
     });
 
-    this.on("Network.requestWillBeSent", (_params, sid) => {
+    this.on("Network.requestWillBeSent", (params, sid) => {
       if (sid !== result.sessionId) return;
       state.networkPending++;
+      const requestId = String(params.requestId ?? "");
+      if (!requestId) return;
+      const request = (params.request ?? {}) as JsonObject;
+      const entry: NetworkEntry = {
+        requestId,
+        url: String(request.url ?? ""),
+        method: String(request.method ?? "GET"),
+        resourceType: String(params.type ?? "Other"),
+        status: null,
+        statusText: null,
+        requestHeaders: sanitizeHeadersCdp(
+          (request.headers as Record<string, string>) ?? {}
+        ),
+        responseHeaders: {},
+        requestBody: clipTextCdp(
+          typeof request.postData === "string" ? request.postData : null,
+          MAX_BODY_BYTES
+        ),
+        responseBody: null,
+        responseBodyTruncated: false,
+        responseBodySize: null,
+        startTime: Date.now(),
+        endTime: null,
+        durationMs: null,
+        fromCache: false,
+        failed: false,
+        failureText: null,
+      };
+      state.networkIndex.set(requestId, entry);
+      state.networkLogs.push(entry);
+      trimNetworkCdp(state.networkLogs, state.networkIndex);
     });
 
-    this.on("Network.loadingFinished", (_params, sid) => {
+    this.on("Network.responseReceived", (params, sid) => {
       if (sid !== result.sessionId) return;
-      state.networkPending = Math.max(0, state.networkPending - 1);
+      const requestId = String(params.requestId ?? "");
+      const entry = state.networkIndex.get(requestId);
+      if (!entry) return;
+      const response = (params.response ?? {}) as JsonObject;
+      entry.status =
+        typeof response.status === "number" ? response.status : null;
+      entry.statusText =
+        typeof response.statusText === "string" ? response.statusText : null;
+      entry.responseHeaders = sanitizeHeadersCdp(
+        (response.headers as Record<string, string>) ?? {}
+      );
+      entry.fromCache = response.fromDiskCache === true;
     });
 
-    this.on("Network.loadingFailed", (_params, sid) => {
+    this.on("Network.loadingFinished", (params, sid) => {
       if (sid !== result.sessionId) return;
       state.networkPending = Math.max(0, state.networkPending - 1);
+      const requestId = String(params.requestId ?? "");
+      const entry = state.networkIndex.get(requestId);
+      if (!entry) return;
+      entry.endTime = Date.now();
+      entry.durationMs = entry.endTime - entry.startTime;
+      const contentType = entry.responseHeaders["content-type"] ?? "";
+      if (!TEXT_CONTENT_TYPES.test(contentType)) return;
+      const encodedLength =
+        typeof params.encodedDataLength === "number"
+          ? params.encodedDataLength
+          : Number(entry.responseHeaders["content-length"] ?? NaN);
+      if (Number.isFinite(encodedLength) && encodedLength > MAX_BODY_BYTES) {
+        entry.responseBodySize = encodedLength;
+        entry.responseBodyTruncated = true;
+        return;
+      }
+      this.sendCommand(
+        "Network.getResponseBody",
+        { requestId },
+        result.sessionId
+      )
+        .then((value) => {
+          const payload = value as
+            | { body?: string; base64Encoded?: boolean }
+            | undefined;
+          if (!payload || typeof payload.body !== "string") return;
+          const text = payload.base64Encoded
+            ? Buffer.from(payload.body, "base64").toString("utf8")
+            : payload.body;
+          entry.responseBodySize = text.length;
+          if (text.length > MAX_BODY_BYTES) {
+            entry.responseBody = `${text.slice(0, MAX_BODY_BYTES)}…[truncated]`;
+            entry.responseBodyTruncated = true;
+          } else {
+            entry.responseBody = text;
+          }
+        })
+        .catch(() => {
+          // body may not be retained — ignore
+        });
+    });
+
+    this.on("Network.loadingFailed", (params, sid) => {
+      if (sid !== result.sessionId) return;
+      state.networkPending = Math.max(0, state.networkPending - 1);
+      const requestId = String(params.requestId ?? "");
+      const entry = state.networkIndex.get(requestId);
+      if (!entry) return;
+      entry.failed = true;
+      entry.failureText =
+        typeof params.errorText === "string" ? params.errorText : "failed";
+      entry.endTime = Date.now();
+      entry.durationMs = entry.endTime - entry.startTime;
     });
 
     return state;
@@ -1449,6 +1575,48 @@ export class CdpBrowserDriver implements BrowserDriver {
     return state.pageErrors.slice(-limit);
   }
 
+  private async getNetworkLogs(
+    params: Record<string, unknown>
+  ): Promise<NetworkEntry[]> {
+    const targetId = await this.resolveTargetId(params);
+    const state = await this.getSession(targetId);
+    const limit = Number(params.limit ?? 100);
+    const method =
+      typeof params.method === "string" ? params.method.toUpperCase() : null;
+    const statusParam = params.status;
+    const urlPattern =
+      typeof params.urlPattern === "string" && params.urlPattern.length > 0
+        ? safeRegexCdp(params.urlPattern)
+        : null;
+    const includeBody = params.includeBody === true;
+
+    const filtered = state.networkLogs.filter((entry) => {
+      if (method && entry.method !== method) return false;
+      if (urlPattern && !urlPattern.test(entry.url)) return false;
+      if (typeof statusParam === "number") {
+        if (entry.status !== statusParam) return false;
+      } else if (typeof statusParam === "string") {
+        const range = statusParam.match(/^(\d)xx$/i);
+        if (range) {
+          if (entry.status === null) return false;
+          const bucket = Math.floor(entry.status / 100);
+          if (bucket !== Number(range[1])) return false;
+        }
+      }
+      return true;
+    });
+
+    const sliced = filtered.slice(-limit);
+    if (includeBody) {
+      return sliced;
+    }
+    return sliced.map((entry) => ({
+      ...entry,
+      requestBody: null,
+      responseBody: null,
+    }));
+  }
+
   // -- Evaluate (uses persistent session) --
 
   private async evaluate(
@@ -1540,6 +1708,52 @@ export class CdpBrowserDriver implements BrowserDriver {
       throw new Error(`Tab not found: ${tabId}`);
     }
     return tab.targetId;
+  }
+}
+
+function trimNetworkCdp(
+  entries: NetworkEntry[],
+  index: Map<string, NetworkEntry>
+): void {
+  if (entries.length <= MAX_NETWORK_ENTRIES) return;
+  const dropCount = entries.length - MAX_NETWORK_ENTRIES;
+  const dropped = entries.splice(0, dropCount);
+  for (const entry of dropped) {
+    index.delete(entry.requestId);
+  }
+}
+
+function sanitizeHeadersCdp(
+  headers: Record<string, string>
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    const lower = key.toLowerCase();
+    if (
+      lower === "authorization" ||
+      lower === "cookie" ||
+      lower === "set-cookie" ||
+      lower === "proxy-authorization"
+    ) {
+      out[lower] = "[redacted]";
+      continue;
+    }
+    out[lower] = value;
+  }
+  return out;
+}
+
+function clipTextCdp(text: string | null, max: number): string | null {
+  if (text === null) return null;
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}…[truncated]`;
+}
+
+function safeRegexCdp(pattern: string): RegExp | null {
+  try {
+    return new RegExp(pattern);
+  } catch {
+    return null;
   }
 }
 

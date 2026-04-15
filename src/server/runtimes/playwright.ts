@@ -10,6 +10,8 @@ import {
   type Dialog,
   type LaunchOptions,
   type Page,
+  type Request,
+  type Response,
 } from "playwright-core";
 import type { BridgeAction, BridgeResponse } from "../../shared/protocol.js";
 import type { BrowserDriver } from "../bridge.js";
@@ -26,14 +28,41 @@ interface PlaywrightOptions {
   keepaliveIntervalMs?: number;
 }
 
+interface NetworkEntry {
+  id: string;
+  url: string;
+  method: string;
+  resourceType: string;
+  status: number | null;
+  statusText: string | null;
+  requestHeaders: Record<string, string>;
+  responseHeaders: Record<string, string>;
+  requestBody: string | null;
+  responseBody: string | null;
+  responseBodyTruncated: boolean;
+  responseBodySize: number | null;
+  startTime: number;
+  endTime: number | null;
+  durationMs: number | null;
+  fromCache: boolean;
+  failed: boolean;
+  failureText: string | null;
+}
+
 interface PageState {
   consoleLogs: Array<Record<string, unknown>>;
   pageErrors: Array<Record<string, unknown>>;
+  networkLogs: NetworkEntry[];
+  requestIndex: Map<Request, NetworkEntry>;
   dialogBehavior: { action: "accept" | "dismiss"; text?: string };
   lastDialog: Record<string, unknown> | null;
 }
 
 const MAX_LOG_ENTRIES = 200;
+const MAX_NETWORK_ENTRIES = 500;
+const MAX_BODY_BYTES = 100_000;
+const TEXT_CONTENT_TYPES =
+  /^(text\/|application\/(json|xml|javascript|x-www-form-urlencoded|graphql))/i;
 
 export class PlaywrightBrowserDriver implements BrowserDriver {
   private readonly options: PlaywrightOptions;
@@ -213,6 +242,8 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
         return this.getConsoleLogs(params);
       case "monitor.pageErrors":
         return this.getPageErrors(params);
+      case "monitor.networkLogs":
+        return this.getNetworkLogs(params);
       default:
         throw new Error(`Unsupported action: ${action satisfies never}`);
     }
@@ -261,6 +292,8 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
     const state: PageState = {
       consoleLogs: [],
       pageErrors: [],
+      networkLogs: [],
+      requestIndex: new Map(),
       dialogBehavior: { action: "dismiss" },
       lastDialog: null,
     };
@@ -275,8 +308,90 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
       });
       trimEntries(state.pageErrors);
     });
+    page.on("request", (request) => this.recordRequest(state, request));
+    page.on("response", (response) => {
+      void this.recordResponse(state, response);
+    });
+    page.on("requestfailed", (request) =>
+      this.recordRequestFailed(state, request)
+    );
     page.on("dialog", (dialog) => void this.handleDialog(page, dialog));
     page.on("close", () => this.pageStates.delete(page));
+  }
+
+  private recordRequest(state: PageState, request: Request): void {
+    const entry: NetworkEntry = {
+      id: crypto.randomUUID(),
+      url: request.url(),
+      method: request.method(),
+      resourceType: request.resourceType(),
+      status: null,
+      statusText: null,
+      requestHeaders: sanitizeHeaders(request.headers()),
+      responseHeaders: {},
+      requestBody: clipText(request.postData() ?? null, MAX_BODY_BYTES),
+      responseBody: null,
+      responseBodyTruncated: false,
+      responseBodySize: null,
+      startTime: Date.now(),
+      endTime: null,
+      durationMs: null,
+      fromCache: false,
+      failed: false,
+      failureText: null,
+    };
+    state.requestIndex.set(request, entry);
+    state.networkLogs.push(entry);
+    trimNetwork(state.networkLogs, state.requestIndex);
+  }
+
+  private async recordResponse(
+    state: PageState,
+    response: Response
+  ): Promise<void> {
+    const entry = state.requestIndex.get(response.request());
+    if (!entry) {
+      return;
+    }
+    entry.status = response.status();
+    entry.statusText = response.statusText();
+    entry.responseHeaders = sanitizeHeaders(await response.headers());
+    entry.fromCache = response.fromServiceWorker();
+    entry.endTime = Date.now();
+    entry.durationMs = entry.endTime - entry.startTime;
+    const contentType = entry.responseHeaders["content-type"] ?? "";
+    if (!TEXT_CONTENT_TYPES.test(contentType)) {
+      return;
+    }
+    const declared = Number(entry.responseHeaders["content-length"] ?? "");
+    if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+      entry.responseBodySize = declared;
+      entry.responseBodyTruncated = true;
+      return;
+    }
+    try {
+      const body = await response.body();
+      entry.responseBodySize = body.byteLength;
+      if (body.byteLength > MAX_BODY_BYTES) {
+        entry.responseBody = body.slice(0, MAX_BODY_BYTES).toString("utf8");
+        entry.responseBodyTruncated = true;
+      } else {
+        entry.responseBody = body.toString("utf8");
+      }
+    } catch {
+      // body unavailable (e.g. redirect without body) — ignore
+    }
+  }
+
+  private recordRequestFailed(state: PageState, request: Request): void {
+    const entry = state.requestIndex.get(request);
+    if (!entry) {
+      return;
+    }
+    entry.failed = true;
+    entry.failureText = request.failure()?.errorText ?? "request failed";
+    entry.endTime = Date.now();
+    entry.durationMs = entry.endTime - entry.startTime;
   }
 
   private recordConsole(page: Page, message: ConsoleMessage): void {
@@ -1116,6 +1231,47 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
     return this.getPageState(this.getPage(params)).pageErrors.slice(-limit);
   }
 
+  private async getNetworkLogs(
+    params: Record<string, unknown>
+  ): Promise<NetworkEntry[]> {
+    const state = this.getPageState(this.getPage(params));
+    const limit = Number(params.limit ?? 100);
+    const method =
+      typeof params.method === "string" ? params.method.toUpperCase() : null;
+    const statusParam = params.status;
+    const urlPattern =
+      typeof params.urlPattern === "string" && params.urlPattern.length > 0
+        ? safeRegex(params.urlPattern)
+        : null;
+    const includeBody = params.includeBody === true;
+
+    const filtered = state.networkLogs.filter((entry) => {
+      if (method && entry.method !== method) return false;
+      if (urlPattern && !urlPattern.test(entry.url)) return false;
+      if (typeof statusParam === "number") {
+        if (entry.status !== statusParam) return false;
+      } else if (typeof statusParam === "string") {
+        const range = statusParam.match(/^(\d)xx$/i);
+        if (range) {
+          if (entry.status === null) return false;
+          const bucket = Math.floor(entry.status / 100);
+          if (bucket !== Number(range[1])) return false;
+        }
+      }
+      return true;
+    });
+
+    const sliced = filtered.slice(-limit);
+    if (includeBody) {
+      return sliced;
+    }
+    return sliced.map((entry) => ({
+      ...entry,
+      requestBody: null,
+      responseBody: null,
+    }));
+  }
+
   private getPage(params: Record<string, unknown>): Page {
     const page = this.pageFromTabId(
       typeof params.tabId === "number"
@@ -1243,6 +1399,58 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
 function trimEntries(entries: Array<Record<string, unknown>>): void {
   if (entries.length > MAX_LOG_ENTRIES) {
     entries.splice(0, entries.length - MAX_LOG_ENTRIES);
+  }
+}
+
+function trimNetwork(
+  entries: NetworkEntry[],
+  index: Map<Request, NetworkEntry>
+): void {
+  if (entries.length <= MAX_NETWORK_ENTRIES) {
+    return;
+  }
+  const dropCount = entries.length - MAX_NETWORK_ENTRIES;
+  const dropped = entries.splice(0, dropCount);
+  if (dropped.length === 0) return;
+  const droppedIds = new Set(dropped.map((entry) => entry.id));
+  for (const [request, entry] of index) {
+    if (droppedIds.has(entry.id)) {
+      index.delete(request);
+    }
+  }
+}
+
+function sanitizeHeaders(
+  headers: Record<string, string>
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    const lower = key.toLowerCase();
+    if (
+      lower === "authorization" ||
+      lower === "cookie" ||
+      lower === "set-cookie" ||
+      lower === "proxy-authorization"
+    ) {
+      out[lower] = "[redacted]";
+      continue;
+    }
+    out[lower] = value;
+  }
+  return out;
+}
+
+function clipText(text: string | null, max: number): string | null {
+  if (text === null) return null;
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}…[truncated]`;
+}
+
+function safeRegex(pattern: string): RegExp | null {
+  try {
+    return new RegExp(pattern);
+  } catch {
+    return null;
   }
 }
 

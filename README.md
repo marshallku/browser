@@ -21,7 +21,7 @@ The MCP surface keeps the `browser-control` shape and adds secret-safe input hel
 | **Cookies** | get, set, delete | full | full |
 | **Storage** | get, set, clear + session save/restore | full | full |
 | **Dialog** | setBehavior, getLast | - | full |
-| **Monitor** | consoleLogs, pageErrors | - | full |
+| **Monitor** | consoleLogs, pageErrors, networkLogs | - | full |
 
 ## Architecture
 
@@ -151,6 +151,55 @@ npm run smoke:fill-and-submit
 | `BROWSER_HEADLESS` | `1` | Set `0` to show the browser window |
 | `BROWSER_USER_DATA_DIR` | (temp) | Persistent profile directory |
 | `BROWSER_STARTUP_TIMEOUT_MS` | `30000` | Browser launch timeout |
+
+## Monitoring tools for AI agents
+
+`get_console_logs`, `get_page_errors`, and `get_network_logs` expose per-tab event buffers captured automatically by the Playwright/CDP runtimes. Useful when the model needs to debug a flow rather than just control the page.
+
+### `get_network_logs`
+
+Returns HTTP activity seen by the tab (navigation, XHR, fetch, subresources).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `tabId` | number? | Defaults to the active tab. |
+| `method` | string? | Filter by method (case-insensitive). |
+| `status` | number \| "2xx" \| "3xx" \| "4xx" \| "5xx" | Exact code or bucket. |
+| `urlPattern` | string? | Regex matched against the URL (e.g. `/api/users`). |
+| `limit` | number? | Default 100, cap 500. |
+| `includeBody` | boolean? | Include request/response bodies (default false). |
+
+Returned entry shape (one per request):
+
+```
+{
+  url, method, resourceType, status, statusText,
+  requestHeaders, responseHeaders,
+  requestBody, responseBody, responseBodyTruncated, responseBodySize,
+  startTime, endTime, durationMs,
+  fromCache, failed, failureText
+}
+```
+
+Limits & safety:
+
+- **500 entries per tab** (FIFO). Tab close clears everything.
+- **Bodies only captured for text-ish content types** (`text/*`, `application/json`, `application/xml`, `application/javascript`, form/graphql) and **truncated at 100 KB**.
+- **Sensitive headers redacted**: `authorization`, `cookie`, `set-cookie`, `proxy-authorization` become `[redacted]` before the buffer is populated.
+- Bodies are omitted from responses unless `includeBody=true` — keeps the default output small for LLM context.
+
+Typical recipes for an AI agent:
+
+```jsonc
+// 1. Find failing API calls after clicking submit
+{ "urlPattern": "/api/", "status": "5xx" }
+
+// 2. Inspect a specific JSON response
+{ "urlPattern": "/api/users/42$", "includeBody": true, "limit": 5 }
+
+// 3. Check whether the page hit the backend at all
+{ "method": "POST", "urlPattern": "/graphql" }
+```
 
 ## Notes
 

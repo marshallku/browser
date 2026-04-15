@@ -144,6 +144,7 @@ export class FetchBrowserDriver implements BrowserDriver {
         return this.clearStorage(params);
       case "monitor.consoleLogs":
       case "monitor.pageErrors":
+      case "monitor.networkLogs":
         return this.unsupported("Runtime logs require a browser runtime");
       case "capture.metrics":
         return this.getMetrics(params);

@@ -39,6 +39,7 @@ export type BridgeAction =
   | "storage.clear"
   | "monitor.consoleLogs"
   | "monitor.pageErrors"
+  | "monitor.networkLogs"
   | "wait.networkIdle"
   | "capture.metrics"
   | "capture.highlight"
