@@ -61,8 +61,39 @@ AI Browser MCP Server
 
 ## Setup
 
+### Quick install (recommended)
+
+After cloning, one script handles npm install → Playwright Chromium → build → MCP config patch:
+
 ```bash
-# Install dependencies & build
+git clone https://github.com/marshallku/ai-browser && cd ai-browser
+./scripts/install.sh                     # registers in both Claude Code (~/.claude.json)
+                                         # and Codex CLI (~/.codex/config.toml) if present
+./scripts/install.sh --target claude     # only Claude Code
+./scripts/install.sh --target codex      # only Codex CLI
+./scripts/install.sh --dry-run           # print plan, no writes
+```
+
+Useful flags:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--target` | `both` | `claude`, `codex`, or `both` |
+| `--runtime` | `playwright` | `playwright` or `chromium-cdp` |
+| `--headless` | `1` | `0` to show the window |
+| `--executable` | auto | Override Chromium binary path |
+| `--user-data-dir` | (temp) | Persistent profile directory |
+| `--name` | `ai-browser` | MCP server key in the client config |
+| `--skip-install` / `--skip-build` | — | Skip step 1 / step 3 |
+| `--dry-run` | — | Print what would change without writing |
+
+The script is idempotent — re-running it updates the existing entry and creates a `.bak.<timestamp>` of the previous config.
+
+After install, restart your client so it re-reads the MCP config.
+
+### Manual install
+
+```bash
 npm install && npm run build
 ```
 
