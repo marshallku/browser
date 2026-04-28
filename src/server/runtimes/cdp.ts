@@ -5,6 +5,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import WebSocket from "ws";
 import type { BridgeAction, BridgeResponse } from "../../shared/protocol.js";
 import type { BrowserDriver } from "../bridge.js";
+import { getSecretStore } from "../secrets.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -264,9 +265,7 @@ export class CdpBrowserDriver implements BrowserDriver {
       case "interaction.type":
         return this.typeText(params);
       case "interaction.typeSecret":
-        return this.unsupported(
-          "Secret typing is not implemented in the CDP runtime"
-        );
+        return this.typeSecret(params);
       case "interaction.scroll":
         return this.scroll(params);
       case "interaction.pressKey":
@@ -959,50 +958,192 @@ export class CdpBrowserDriver implements BrowserDriver {
 
   // -- Interaction --
 
+  private async waitForActionable(
+    targetId: string,
+    selector: string,
+    options: {
+      timeout?: number;
+      requireEnabled?: boolean;
+      requireHittable?: boolean;
+      offsetX?: number;
+      offsetY?: number;
+    } = {}
+  ): Promise<{ x: number; y: number; width: number; height: number }> {
+    const timeout = options.timeout ?? 30_000;
+    const requireEnabled = options.requireEnabled !== false;
+    const requireHittable = options.requireHittable !== false;
+    const offsetXParam = options.offsetX;
+    const offsetYParam = options.offsetY;
+    const deadline = Date.now() + timeout;
+    let lastReason = "not-found";
+    let lastRect: { x: number; y: number; w: number; h: number } | null = null;
+    let stableSince = 0;
+
+    while (Date.now() < deadline) {
+      const probe = `(() => {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return { ready: false, reason: 'not-found' };
+        if (!(el instanceof Element)) return { ready: false, reason: 'not-element' };
+        if (${JSON.stringify(requireEnabled)} && 'disabled' in el && el.disabled) {
+          return { ready: false, reason: 'disabled' };
+        }
+        if ('inert' in el && el.inert) return { ready: false, reason: 'inert' };
+        el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return { ready: false, reason: 'zero-size' };
+        const cs = getComputedStyle(el);
+        if (cs.visibility === 'hidden' || cs.display === 'none') return { ready: false, reason: 'hidden' };
+        if (parseFloat(cs.opacity) === 0) return { ready: false, reason: 'transparent' };
+        if (${JSON.stringify(requireHittable)}) {
+          if (cs.pointerEvents === 'none') return { ready: false, reason: 'pointer-events-none' };
+          const offsetX = ${offsetXParam === undefined ? "rect.width / 2" : JSON.stringify(offsetXParam)};
+          const offsetY = ${offsetYParam === undefined ? "rect.height / 2" : JSON.stringify(offsetYParam)};
+          const px = rect.x + offsetX;
+          const py = rect.y + offsetY;
+          if (px < 0 || py < 0 || px >= innerWidth || py >= innerHeight) {
+            return { ready: false, reason: 'point-offscreen' };
+          }
+          const hit = document.elementFromPoint(px, py);
+          if (!hit) return { ready: false, reason: 'no-hit' };
+          if (hit !== el && !el.contains(hit)) {
+            const tag = hit.tagName ? hit.tagName.toLowerCase() : '?';
+            const id = hit.id ? '#' + hit.id : '';
+            return { ready: false, reason: 'obstructed-by:' + tag + id };
+          }
+        }
+        return {
+          ready: true,
+          rect: { x: rect.x, y: rect.y, w: rect.width, h: rect.height },
+        };
+      })()`;
+
+      const result = (await this.evaluate(targetId, probe)) as
+        | { ready: false; reason: string }
+        | {
+            ready: true;
+            rect: { x: number; y: number; w: number; h: number };
+          };
+
+      if (!result.ready) {
+        lastReason = result.reason;
+        lastRect = null;
+        stableSince = 0;
+        await sleep(80);
+        continue;
+      }
+
+      const r = result.rect;
+      const same =
+        lastRect !== null &&
+        Math.abs(r.x - lastRect.x) < 0.5 &&
+        Math.abs(r.y - lastRect.y) < 0.5 &&
+        Math.abs(r.w - lastRect.w) < 0.5 &&
+        Math.abs(r.h - lastRect.h) < 0.5;
+      if (same) {
+        if (Date.now() - stableSince >= 100) {
+          return { x: r.x, y: r.y, width: r.w, height: r.h };
+        }
+      } else {
+        lastRect = r;
+        stableSince = Date.now();
+      }
+      await sleep(50);
+    }
+
+    throw new Error(
+      `Element not actionable within ${timeout}ms (${selector}): ${lastReason}`
+    );
+  }
+
+  private async dispatchMouseAt(
+    targetId: string,
+    type: "mouseMoved" | "mousePressed" | "mouseReleased",
+    x: number,
+    y: number,
+    options: { button?: "left" | "right" | "middle"; clickCount?: number } = {}
+  ): Promise<void> {
+    const session = await this.getSession(targetId);
+    await this.sendCommand(
+      "Input.dispatchMouseEvent",
+      {
+        type,
+        x,
+        y,
+        button: options.button ?? (type === "mouseMoved" ? "none" : "left"),
+        clickCount: options.clickCount ?? (type === "mouseMoved" ? 0 : 1),
+      },
+      session.sessionId
+    );
+  }
+
   private async click(params: Record<string, unknown>): Promise<null> {
     const targetId = await this.resolveTargetId(params);
     const selector = String(params.selector ?? "");
-    const code = `
-            (() => {
-                const el = document.querySelector(${JSON.stringify(selector)});
-                if (!(el instanceof HTMLElement)) throw new Error("Element not found: ${selector}");
-                el.scrollIntoView({ block: "center", inline: "center" });
-                el.click();
-                return null;
-            })()
-        `;
-    await this.evaluate(targetId, code);
+    if (!selector) throw new Error("selector is required");
+    const offsetX = typeof params.x === "number" ? params.x : undefined;
+    const offsetY = typeof params.y === "number" ? params.y : undefined;
+    const rect = await this.waitForActionable(targetId, selector, {
+      offsetX,
+      offsetY,
+    });
+    const x = rect.x + (offsetX ?? rect.width / 2);
+    const y = rect.y + (offsetY ?? rect.height / 2);
+    await this.dispatchMouseAt(targetId, "mouseMoved", x, y);
+    await this.dispatchMouseAt(targetId, "mousePressed", x, y);
+    await this.dispatchMouseAt(targetId, "mouseReleased", x, y);
     return null;
   }
 
   private async typeText(params: Record<string, unknown>): Promise<null> {
     const targetId = await this.resolveTargetId(params);
     const selector = String(params.selector ?? "");
+    if (!selector) throw new Error("selector is required");
+    await this.waitForActionable(targetId, selector, { requireHittable: false });
     const text = String(params.text ?? "");
     const clear = params.clear !== false;
-    const code = `
-            (() => {
-                const el = document.querySelector(${JSON.stringify(selector)});
-                if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLElement && el.isContentEditable)) {
-                    throw new Error("Type target not found or not editable: ${selector}");
-                }
-                el.scrollIntoView({ block: "center", inline: "center" });
-                el.focus();
-                if (${JSON.stringify(clear)}) {
-                    if ("value" in el) el.value = "";
-                    else el.textContent = "";
-                }
-                if ("value" in el) el.value = ${JSON.stringify(text)};
-                else document.execCommand("insertText", false, ${JSON.stringify(
-                  text
-                )});
-                el.dispatchEvent(new Event("input", { bubbles: true }));
-                el.dispatchEvent(new Event("change", { bubbles: true }));
-                return null;
-            })()
-        `;
-    await this.evaluate(targetId, code);
+    await this.fillEditable(targetId, selector, text, clear);
     return null;
+  }
+
+  private async typeSecret(params: Record<string, unknown>): Promise<null> {
+    const targetId = await this.resolveTargetId(params);
+    const selector = String(params.selector ?? "");
+    if (!selector) throw new Error("selector is required");
+    const secretId = String(params.secretId ?? "");
+    if (!secretId) throw new Error("secretId is required");
+    const secret = await getSecretStore().get(secretId);
+    await this.waitForActionable(targetId, selector, { requireHittable: false });
+    const clear = params.clear !== false;
+    await this.fillEditable(targetId, selector, secret, clear);
+    return null;
+  }
+
+  private async fillEditable(
+    targetId: string,
+    selector: string,
+    text: string,
+    clear: boolean
+  ): Promise<void> {
+    const code = `
+      (() => {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLElement && el.isContentEditable)) {
+          throw new Error("Type target not found or not editable: ${selector}");
+        }
+        el.scrollIntoView({ block: "center", inline: "center" });
+        el.focus();
+        if (${JSON.stringify(clear)}) {
+          if ("value" in el) el.value = "";
+          else el.textContent = "";
+        }
+        if ("value" in el) el.value = ${JSON.stringify(text)};
+        else document.execCommand("insertText", false, ${JSON.stringify(text)});
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        return null;
+      })()
+    `;
+    await this.evaluate(targetId, code);
   }
 
   private async scroll(params: Record<string, unknown>): Promise<null> {
@@ -1085,21 +1226,19 @@ export class CdpBrowserDriver implements BrowserDriver {
     if (!selector) {
       throw new Error("selector is required");
     }
-    const offsetX = typeof params.x === "number" ? params.x : null;
-    const offsetY = typeof params.y === "number" ? params.y : null;
-    const rect = (await this.evaluate(
+    const offsetX = typeof params.x === "number" ? params.x : undefined;
+    const offsetY = typeof params.y === "number" ? params.y : undefined;
+    const rect = await this.waitForActionable(targetId, selector, {
+      requireEnabled: false,
+      offsetX,
+      offsetY,
+    });
+    await this.dispatchMouseAt(
       targetId,
-      `(() => {
-        const el = document.querySelector(${JSON.stringify(selector)});
-        if (!(el instanceof Element)) throw new Error("Element not found: ${selector}");
-        el.scrollIntoView({ block: "center", inline: "center" });
-        const r = el.getBoundingClientRect();
-        return { x: r.x, y: r.y, width: r.width, height: r.height };
-      })()`
-    )) as { x: number; y: number; width: number; height: number };
-    const x = rect.x + (offsetX ?? rect.width / 2);
-    const y = rect.y + (offsetY ?? rect.height / 2);
-    await this.dispatchMouseMove(targetId, x, y);
+      "mouseMoved",
+      rect.x + (offsetX ?? rect.width / 2),
+      rect.y + (offsetY ?? rect.height / 2)
+    );
     return null;
   }
 
@@ -1107,26 +1246,15 @@ export class CdpBrowserDriver implements BrowserDriver {
     const targetId = await this.resolveTargetId(params);
     const x = Number(params.x ?? 0);
     const y = Number(params.y ?? 0);
-    await this.dispatchMouseMove(targetId, x, y);
+    await this.dispatchMouseAt(targetId, "mouseMoved", x, y);
     return null;
-  }
-
-  private async dispatchMouseMove(
-    targetId: string,
-    x: number,
-    y: number
-  ): Promise<void> {
-    const session = await this.getSession(targetId);
-    await this.sendCommand(
-      "Input.dispatchMouseEvent",
-      { type: "mouseMoved", x, y, button: "none" },
-      session.sessionId
-    );
   }
 
   private async selectOption(params: Record<string, unknown>): Promise<null> {
     const targetId = await this.resolveTargetId(params);
     const selector = String(params.selector ?? "");
+    if (!selector) throw new Error("selector is required");
+    await this.waitForActionable(targetId, selector, { requireHittable: false });
     const value = typeof params.value === "string" ? params.value : null;
     const label = typeof params.label === "string" ? params.label : null;
     const index = typeof params.index === "number" ? params.index : null;
@@ -1161,6 +1289,8 @@ export class CdpBrowserDriver implements BrowserDriver {
   private async checkElement(params: Record<string, unknown>): Promise<null> {
     const targetId = await this.resolveTargetId(params);
     const selector = String(params.selector ?? "");
+    if (!selector) throw new Error("selector is required");
+    await this.waitForActionable(targetId, selector, { requireHittable: false });
     const checked = params.checked !== false;
     const code = `
             (() => {
