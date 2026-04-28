@@ -14,7 +14,7 @@ The MCP surface keeps the `browser-control` shape and adds secret-safe input hel
 |----------|-------|:----------:|:---:|
 | **Tabs** | list, open, close, navigate, activate, back, forward, reload | partial | full |
 | **DOM** | getHtml, getText, querySelector, formValues, accessibilityTree | partial | full |
-| **Interaction** | click, type, scroll, pressKey, selectOption, check, annotations | - | full |
+| **Interaction** | click, type, scroll, pressKey (chords), hover, mouseMove, selectOption, check, annotations | - | full |
 | **Capture** | screenshot, computedStyles, elementRect, metrics, annotate, highlight | metrics only | full |
 | **Execution** | executeJs | - | full |
 | **Wait** | selector, navigation, networkIdle | - | full |

@@ -271,6 +271,10 @@ export class CdpBrowserDriver implements BrowserDriver {
         return this.scroll(params);
       case "interaction.pressKey":
         return this.pressKey(params);
+      case "interaction.hover":
+        return this.hover(params);
+      case "interaction.mouseMove":
+        return this.mouseMove(params);
       case "interaction.selectOption":
         return this.selectOption(params);
       case "interaction.check":
@@ -1073,6 +1077,51 @@ export class CdpBrowserDriver implements BrowserDriver {
     );
 
     return null;
+  }
+
+  private async hover(params: Record<string, unknown>): Promise<null> {
+    const targetId = await this.resolveTargetId(params);
+    const selector = String(params.selector ?? "");
+    if (!selector) {
+      throw new Error("selector is required");
+    }
+    const offsetX = typeof params.x === "number" ? params.x : null;
+    const offsetY = typeof params.y === "number" ? params.y : null;
+    const rect = (await this.evaluate(
+      targetId,
+      `(() => {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!(el instanceof Element)) throw new Error("Element not found: ${selector}");
+        el.scrollIntoView({ block: "center", inline: "center" });
+        const r = el.getBoundingClientRect();
+        return { x: r.x, y: r.y, width: r.width, height: r.height };
+      })()`
+    )) as { x: number; y: number; width: number; height: number };
+    const x = rect.x + (offsetX ?? rect.width / 2);
+    const y = rect.y + (offsetY ?? rect.height / 2);
+    await this.dispatchMouseMove(targetId, x, y);
+    return null;
+  }
+
+  private async mouseMove(params: Record<string, unknown>): Promise<null> {
+    const targetId = await this.resolveTargetId(params);
+    const x = Number(params.x ?? 0);
+    const y = Number(params.y ?? 0);
+    await this.dispatchMouseMove(targetId, x, y);
+    return null;
+  }
+
+  private async dispatchMouseMove(
+    targetId: string,
+    x: number,
+    y: number
+  ): Promise<void> {
+    const session = await this.getSession(targetId);
+    await this.sendCommand(
+      "Input.dispatchMouseEvent",
+      { type: "mouseMoved", x, y, button: "none" },
+      session.sessionId
+    );
   }
 
   private async selectOption(params: Record<string, unknown>): Promise<null> {

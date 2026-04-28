@@ -13,6 +13,8 @@ export type BridgeAction =
   | "interaction.typeSecret"
   | "interaction.scroll"
   | "interaction.pressKey"
+  | "interaction.hover"
+  | "interaction.mouseMove"
   | "capture.screenshot"
   | "capture.computedStyles"
   | "execution.executeJs"

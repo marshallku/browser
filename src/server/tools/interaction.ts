@@ -60,20 +60,67 @@ export function registerInteractionTools(server: McpServer): void {
 
   server.tool(
     "press_key",
-    "Press a keyboard key",
+    "Press a keyboard key or chord. Supports modifiers via '+', e.g. 'Control+A', 'Shift+ArrowLeft', 'Meta+K'. Single keys: 'Enter', 'Tab', 'Escape', 'a'.",
     {
       tabId: z.number().optional().describe("Tab ID (default: active tab)"),
       key: z
         .string()
-        .describe("Key to press (e.g. 'Enter', 'Tab', 'Escape', 'a')"),
+        .describe(
+          "Key or chord (e.g. 'Enter', 'Control+A', 'Shift+ArrowLeft', 'Meta+K')"
+        ),
       selector: z
         .string()
         .optional()
-        .describe("CSS selector of target element"),
+        .describe("CSS selector to focus before pressing (optional)"),
     },
     async ({ tabId, key, selector }) => {
       const res = await send("interaction.pressKey", { tabId, key, selector });
       return createBridgeTextResult(res.success, "Key pressed", res.error);
+    }
+  );
+
+  server.tool(
+    "hover_element",
+    "Move the mouse over an element to trigger hover-revealed UI (tooltips, menus, on-hover buttons). Auto-scrolls into view first.",
+    {
+      tabId: z.number().optional().describe("Tab ID (default: active tab)"),
+      selector: z.string().describe("CSS selector of element to hover over"),
+      x: z
+        .number()
+        .optional()
+        .describe(
+          "Optional offset within the element (px from left). Default: center."
+        ),
+      y: z
+        .number()
+        .optional()
+        .describe(
+          "Optional offset within the element (px from top). Default: center."
+        ),
+    },
+    async ({ tabId, selector, x, y }) => {
+      const res = await send("interaction.hover", { tabId, selector, x, y });
+      return createBridgeTextResult(res.success, "Hovered", res.error);
+    }
+  );
+
+  server.tool(
+    "mouse_move",
+    "Move the mouse to absolute viewport coordinates. Useful for drag rehearsal, dismissing menus, or testing pointer-tracking widgets.",
+    {
+      tabId: z.number().optional().describe("Tab ID (default: active tab)"),
+      x: z.number().describe("Viewport X (px from left)"),
+      y: z.number().describe("Viewport Y (px from top)"),
+      steps: z
+        .number()
+        .optional()
+        .describe(
+          "Intermediate move steps for smooth motion (default: 1, immediate)."
+        ),
+    },
+    async ({ tabId, x, y, steps }) => {
+      const res = await send("interaction.mouseMove", { tabId, x, y, steps });
+      return createBridgeTextResult(res.success, "Mouse moved", res.error);
     }
   );
 

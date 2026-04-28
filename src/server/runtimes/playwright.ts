@@ -192,6 +192,10 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
         return this.scroll(params);
       case "interaction.pressKey":
         return this.pressKey(params);
+      case "interaction.hover":
+        return this.hover(params);
+      case "interaction.mouseMove":
+        return this.mouseMove(params);
       case "interaction.selectOption":
         return this.selectOption(params);
       case "interaction.check":
@@ -836,6 +840,32 @@ export class PlaywrightBrowserDriver implements BrowserDriver {
       await page.locator(params.selector).first().focus();
     }
     await page.keyboard.press(String(params.key ?? ""));
+    return null;
+  }
+
+  private async hover(params: Record<string, unknown>): Promise<null> {
+    const page = this.getPage(params);
+    const selector = String(params.selector ?? "");
+    if (!selector) {
+      throw new Error("selector is required");
+    }
+    const position =
+      typeof params.x === "number" && typeof params.y === "number"
+        ? { x: Number(params.x), y: Number(params.y) }
+        : undefined;
+    await page
+      .locator(selector)
+      .first()
+      .hover(position ? { position } : undefined);
+    return null;
+  }
+
+  private async mouseMove(params: Record<string, unknown>): Promise<null> {
+    const page = this.getPage(params);
+    const x = Number(params.x ?? 0);
+    const y = Number(params.y ?? 0);
+    const steps = typeof params.steps === "number" ? Number(params.steps) : 1;
+    await page.mouse.move(x, y, { steps });
     return null;
   }
 

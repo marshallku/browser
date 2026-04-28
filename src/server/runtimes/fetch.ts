@@ -106,6 +106,8 @@ export class FetchBrowserDriver implements BrowserDriver {
       case "interaction.typeSecret":
       case "interaction.scroll":
       case "interaction.pressKey":
+      case "interaction.hover":
+      case "interaction.mouseMove":
       case "interaction.selectOption":
       case "interaction.check":
       case "interaction.clickAnnotation":
