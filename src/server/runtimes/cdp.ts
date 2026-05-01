@@ -165,8 +165,40 @@ export class CdpBrowserDriver implements BrowserDriver {
     }
 
     if (this.child && !this.child.killed) {
-      this.child.kill("SIGTERM");
+      const child = this.child;
       this.child = null;
+      // If the child already exited before we got here, no need to await.
+      if (child.exitCode !== null || child.signalCode !== null) {
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        let done = false;
+        const finish = (): void => {
+          if (done) return;
+          done = true;
+          resolve();
+        };
+        child.once("exit", finish);
+        child.once("error", finish);
+        const delivered = child.kill("SIGTERM");
+        if (!delivered) {
+          // kill returned false → process already gone or signal undeliverable.
+          finish();
+          return;
+        }
+        const force = setTimeout(() => {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            /* ignore */
+          }
+        }, 5000);
+        const safety = setTimeout(finish, 10_000);
+        child.once("exit", () => {
+          clearTimeout(force);
+          clearTimeout(safety);
+        });
+      });
     }
   }
 

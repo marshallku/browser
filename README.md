@@ -59,6 +59,27 @@ AI Browser MCP Server
 - **Key synthesis** via `Input.dispatchKeyEvent`
 - **Accessibility tree** built from DOM walk with ref-based annotation system
 
+## Two ways to use it
+
+**As an MCP server (for AI agents)** — default. Claude Code / Codex / etc. invoke `ai-browser` (no args) on stdio and call tools. Each MCP session owns its own browser instance.
+
+**As a CLI (for humans + scripts)** — a long-lived daemon owns one Chromium; CLI subcommands talk to it over a Unix socket. Subsequent commands are <100ms (no cold start) and share state across CLI invocations (cookies, tabs, network logs).
+
+```bash
+ai-browser navigate https://example.com
+ai-browser get-text --selector h1
+ai-browser eval "document.title" --json
+ai-browser network-logs --status 4xx --json
+ai-browser screenshot --out /tmp/page.png
+ai-browser repl                                # interactive shell
+ai-browser daemon status                       # is the browser running?
+ai-browser daemon stop                         # quit the browser
+```
+
+The daemon auto-spawns on the first CLI command. State persists across CLI calls. (MCP and CLI currently run in separate processes with separate browsers — sharing one instance between AI and human is a planned follow-up.)
+
+Run `ai-browser help` for the full subcommand list. See [CLI section](#cli) below.
+
 ## Setup
 
 ### Quick install (recommended)
@@ -182,6 +203,95 @@ npm run smoke:fill-and-submit
 | `BROWSER_HEADLESS` | `1` | Set `0` to show the browser window |
 | `BROWSER_USER_DATA_DIR` | (temp) | Persistent profile directory |
 | `BROWSER_STARTUP_TIMEOUT_MS` | `30000` | Browser launch timeout |
+
+## CLI
+
+```
+ai-browser <subcommand> [args] [--option value] [--json] [--tab N]
+ai-browser daemon [start|stop|status|restart|--foreground]
+ai-browser repl
+ai-browser mcp                  # explicit MCP server mode
+ai-browser help
+```
+
+### Daemon lifecycle
+
+The daemon listens on `$XDG_RUNTIME_DIR/ai-browser/daemon.sock` (fallback `~/.cache/ai-browser/daemon.sock`). The OS-level socket bind itself acts as the single-instance lock — a second startup is rejected unless both the recorded PID is dead *and* a ping to the socket fails. `daemon.pid` is a stale-owner hint, not the lock.
+
+| Command | Effect |
+|---------|--------|
+| `ai-browser daemon start` | Start a detached daemon (no-op if already running) |
+| `ai-browser daemon stop` | Send shutdown to the daemon |
+| `ai-browser daemon status` | Print socket path, PID, and running state. Exit codes: `0` = running (ready), `1` = stopped, `2` = starting/mid-init |
+| `ai-browser daemon restart` | Stop + start |
+| `ai-browser daemon --foreground` | Run the daemon in the foreground (used internally and for debugging) |
+
+Any subcommand auto-spawns the daemon if it is not running.
+
+### Output format
+
+- Default — pretty JSON for object results, plain text for strings, `ok` for null.
+- `--json` — single-line compact JSON of `result.data` (machine-readable; the wrapper success/error envelope is dropped on success).
+- `--out FILE` — write base64 binary results (e.g. `screenshot`) to FILE.
+
+### Common subcommands
+
+```bash
+# Navigation
+ai-browser navigate https://example.com
+ai-browser open-tab https://other.example
+ai-browser list-tabs --json
+ai-browser activate-tab --tab 2
+ai-browser back        # also: forward, reload
+
+# DOM
+ai-browser get-text --selector main
+ai-browser get-html --selector "#app"
+ai-browser query "button[type=submit]" --json
+ai-browser summary
+
+# Interaction
+ai-browser click "button.primary"
+ai-browser type "#email" "user@example.com"
+ai-browser hover "[data-tooltip]"
+ai-browser press-key "Control+A"
+ai-browser select-option "select#country" --value KR
+ai-browser check "#agree"
+
+# Capture
+ai-browser screenshot --out /tmp/page.png
+ai-browser metrics --json
+
+# Waits
+ai-browser wait-selector "#app-ready"
+ai-browser wait-network-idle
+
+# Monitoring
+ai-browser console-logs --json
+ai-browser page-errors --json
+ai-browser network-logs --method POST --url-pattern "/api/" --json
+ai-browser network-logs --status 4xx --include-body true --json
+
+# State
+ai-browser cookies-get https://example.com --json
+ai-browser cookies-set --url https://example.com --name session --value abc
+ai-browser storage-get --type local --json
+ai-browser eval "document.querySelectorAll('a').length" --json
+```
+
+### REPL
+
+```
+$ ai-browser repl
+ai-browser repl — type 'help' for commands, 'exit' to quit
+syntax: <action> [json-params]   e.g.  tabs.navigate {"url":"https://example.com"}
+> tabs.navigate {"url":"https://example.com"}
+> dom.contentSummary
+> monitor.networkLogs {"status":"4xx"}
+> exit
+```
+
+REPL accepts the raw bridge actions (e.g. `tabs.navigate`, `monitor.networkLogs`) with a JSON params object. Tab-completion offers action names. History persists at `$XDG_DATA_HOME/ai-browser/repl_history`.
 
 ## Monitoring tools for AI agents
 
